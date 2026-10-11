@@ -54,22 +54,25 @@ henüz yazılmadı: Firebase projesi ve emulator bu ortamda yok. Adaptör, `Link
 Firestore belgeleri üzerinden uygulayacak; protokol değişmeyecek.
 Bilinen sınır: giden mesajlar bellekte tutuluyor (kırpma yok), snapshot tabanlı resync henüz yok.
 
-## Android APK (`:app`)
+## Android APK (`:apk`)
 
-`:app` Compose arayüzüdür (tek cihazda iki koltuk). Android Gradle eklentisi ve Compose kütüphaneleri Google
-depolarından (`maven.google.com`, yönlendirmeleri `dl.google.com`) gelir. Varsayılan derleme bunlara bağlı değildir;
-modül yalnızca `-Pandroid=true` ile dahil edilir.
-
-Gereksinimler:
-
-- Ortamda `dl.google.com` erişilebilir olmalı.
-- Android SDK kurulu olmalı (platform 34 ve build-tools 34.0.0); `ANDROID_HOME` ya da `local.properties` ile gösterilmeli.
+`:apk` Android çerçeve görünümleriyle yazılmış tek cihazlı iki koltuk arayüzüdür (Compose değil).
+APK, Google'ın derleme zinciri (AGP, aapt2, r8) olmadan `scripts/build_apk.py` ile üretilir:
 
 ```sh
-gradle -Pandroid=true :app:assembleDebug
-# APK: app/build/outputs/apk/debug/app-debug.apk
+python3 scripts/build_apk.py
+# APK: apk/build/outputs/apk/debug/app-debug.apk
 ```
 
-Durum: arayüz kodu ve Gradle yapılandırması yazıldı; bu ortamda Android SDK ve Google depoları erişilemediği için
-derlenip test edilmedi. Oturum mantığı (`HotseatSession`) JVM tarafında test edilmiştir.
+Betik şunları yapar: Gradle ile sınıfları derler; dalvik-dx 16.0.1 ile `classes.dex` üretir; ikili
+`AndroidManifest.xml` yazar; debug anahtarıyla v1 imzalar. Araçlar Maven Central'dan indirilir.
 
+Sınırlar (bilinçli):
+
+- Yalnızca v1 imza; `targetSdk` 29. v2/v3 imza ve zipalign yoktur (aapt2/apksigner Google depolarında).
+- Kaynak (res) yok; uygulama adı ve metinler kodda.
+- Compose sürümü (önceki `:app`) bu yolda derlenemiyor; Google'ın araçları kullanılabilir olunca geri dönebilir.
+- Kotlin 2.0 derlemesi, dx'in desteklediği sınıf-tabanlı lambda ve eski stdlib (1.7.22) ile çalışır. Betik,
+  uygulama sınıflarının başvurduğu kotlin/kotlinx sınıflarının çalışma zamanı jar'larında var olduğunu denetler
+  (metot düzeyi denetim yok).
+- Cihazda ve emülatörde çalıştırılmadı; yalnızca paketin yapısı ve imzası doğrulandı.

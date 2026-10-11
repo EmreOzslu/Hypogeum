@@ -20,7 +20,7 @@ enum class Terrain(
     ;
 
     companion object {
-        fun fromGlyph(c: Char): Terrain = entries.firstOrNull { it.glyph == c }
+        fun fromGlyph(c: Char): Terrain = values().firstOrNull { it.glyph == c }
             ?: throw IllegalArgumentException("Unknown terrain glyph '$c'")
     }
 }
