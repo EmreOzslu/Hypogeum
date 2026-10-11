@@ -54,3 +54,22 @@ henüz yazılmadı: Firebase projesi ve emulator bu ortamda yok. Adaptör, `Link
 Firestore belgeleri üzerinden uygulayacak; protokol değişmeyecek.
 Bilinen sınır: giden mesajlar bellekte tutuluyor (kırpma yok), snapshot tabanlı resync henüz yok.
 
+## Android APK (`:app`)
+
+`:app` Compose arayüzüdür (tek cihazda iki koltuk). Android Gradle eklentisi ve Compose kütüphaneleri Google
+depolarından (`maven.google.com`, yönlendirmeleri `dl.google.com`) gelir. Varsayılan derleme bunlara bağlı değildir;
+modül yalnızca `-Pandroid=true` ile dahil edilir.
+
+Gereksinimler:
+
+- Ortamda `dl.google.com` erişilebilir olmalı.
+- Android SDK kurulu olmalı (platform 34 ve build-tools 34.0.0); `ANDROID_HOME` ya da `local.properties` ile gösterilmeli.
+
+```sh
+gradle -Pandroid=true :app:assembleDebug
+# APK: app/build/outputs/apk/debug/app-debug.apk
+```
+
+Durum: arayüz kodu ve Gradle yapılandırması yazıldı; bu ortamda Android SDK ve Google depoları erişilemediği için
+derlenip test edilmedi. Oturum mantığı (`HotseatSession`) JVM tarafında test edilmiştir.
+

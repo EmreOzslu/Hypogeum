@@ -3,8 +3,16 @@ plugins {
     kotlin("plugin.serialization")
 }
 
+// Bytecode 17: Android uygulaması bu modülleri tüketebilsin diye (JDK 21 ile derlenir).
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
 kotlin {
-    jvmToolchain(21)
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
 }
 
 dependencies {
