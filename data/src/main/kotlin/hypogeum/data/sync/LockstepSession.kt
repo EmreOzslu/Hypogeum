@@ -37,6 +37,9 @@ class LockstepSession(
         resolveIfReady()
     }
 
+    /** Kendi commit'i var, karşı tarafınki henüz gelmedi. */
+    val isWaitingForPeer: Boolean get() = local != null && peer == null
+
     /** Bu koltuğun biriken olayları alır ve temizler. */
     fun takeEvents(): List<GameEvent> {
         val out = pendingEvents.toList()

@@ -10,19 +10,30 @@ import hypogeum.domain.strategy.StrategicCommand
 import hypogeum.domain.tactics.SkirmishCommand
 
 /**
- * Tek cihazda iki koltuk. Her koltuğun kendi state kopyası var; mesajlar bellek içi taşınır
- * ve her adımda iki taraf hash ile karşılaştırılır. Ağ (M6) geldiğinde bu sınıf değişmeden kalır.
+ * Tek cihazda iki koltuk. Her koltuğun kendi state kopyası ve ReliableChannel'ı var; taşıma bellek içi.
+ * Gerçek ağda (M6 FirebaseSync) aynı sınıf, yalnızca bus yerine başka Link kullanır.
  */
-class HotseatMatch private constructor(p1: GameState, p2: GameState) {
-    private val bus = LocalHotseatSync()
-    private val sessions = PerPlayer(
-        LockstepSession(PlayerId.P1, p1, bus.endpoint(PlayerId.P1)),
-        LockstepSession(PlayerId.P2, p2, bus.endpoint(PlayerId.P2)),
+class HotseatMatch private constructor(p1: GameState, p2: GameState, private val bus: LocalBus<WireMessage>) {
+    private val channels = PerPlayer(
+        ReliableChannel(PlayerId.P1, p1.matchId, bus.endpoint(PlayerId.P1)),
+        ReliableChannel(PlayerId.P2, p2.matchId, bus.endpoint(PlayerId.P2)),
     )
+    private val sessions = PerPlayer(
+        LockstepSession(PlayerId.P1, p1, channels.p1),
+        LockstepSession(PlayerId.P2, p2, channels.p2),
+    )
+
+    init {
+        channels.p1.hello()
+        channels.p2.hello()
+        drain()
+    }
 
     fun state(seat: PlayerId): GameState = sessions[seat].state
 
-    /** Koltuk planlamasını commit eder. İki koltuk da commit edince epoch çözülür. */
+    /** Koltuk bu epoch için commit etti, karşı tarafın commit'i henüz çözülmedi. */
+    fun isWaiting(seat: PlayerId): Boolean = sessions[seat].isWaitingForPeer
+
     /** Dönen olaylar, komutu veren koltuğun raporudur; iki koltuk aynı olayı üretir, bir kez döner. */
     fun commitPlanning(seat: PlayerId, commands: List<StrategicCommand>): List<GameEvent> {
         sessions[seat].submitPlanning(commands)
@@ -38,6 +49,16 @@ class HotseatMatch private constructor(p1: GameState, p2: GameState) {
         return r
     }
 
+    /**
+     * Kayıp mesajları kurtarır: iki koltuk da kendi son teslim noktasını bildirir, eksikler yeniden gönderilir.
+     * Kayıpsız taşımada gereksizdir; kopma veya kayıp sonrası çağrılır.
+     */
+    fun resync() {
+        channels.p1.hello()
+        channels.p2.hello()
+        drain()
+    }
+
     private fun drain() {
         while (bus.hasPending()) {
             sessions.p1.pump()
@@ -46,9 +67,12 @@ class HotseatMatch private constructor(p1: GameState, p2: GameState) {
     }
 
     companion object {
-        fun start(initial: GameState): HotseatMatch = HotseatMatch(initial, initial)
+        fun start(initial: GameState): HotseatMatch = HotseatMatch(initial, initial, LocalBus())
 
-        /** Test: iki koltuğun state'i farklı başlayabilir (senkron bozukluğunu simüle etmek için). */
-        fun withStates(p1: GameState, p2: GameState): HotseatMatch = HotseatMatch(p1, p2)
+        /** Test: iki koltuğun state'i farklı olabilir (senkron bozukluğunu simüle etmek için). */
+        fun withStates(p1: GameState, p2: GameState): HotseatMatch = HotseatMatch(p1, p2, LocalBus())
+
+        /** Test: taşıma hattı dışarıdan verilir (kayıp/tekrar/kopma simülasyonu için). */
+        fun withBus(initial: GameState, bus: LocalBus<WireMessage>): HotseatMatch = HotseatMatch(initial, initial, bus)
     }
 }

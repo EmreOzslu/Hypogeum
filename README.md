@@ -7,7 +7,7 @@ Tur bazlı, co-op XCOM tarzı strateji oyunu. Tasarım: [`docs/DESIGN.md`](docs/
 | Modül | İçerik | Durum |
 |---|---|---|
 | `:domain` | Saf Kotlin. RNG, iki kampüs, ortak dünya, çözüm sırası, ortak görevler, sevkiyat, araştırma, taktik motor | M0–M5 |
-| `:data` | Kayıt codec'i, kanonik JSON, state digest, lockstep senkron (LocalHotseatSync) | M0, M3 |
+| `:data` | Kayıt codec'i, kanonik JSON, state digest, lockstep senkron, sıralı/yeniden iletimli kanal | M0, M3, M6 (protokol) |
 | `:cli` | Terminal arayüzü: tek cihazda iki koltuk (hotseat) | M1–M5 |
 
 Android/Compose arayüzü (`:app`) henüz yok; Android SDK bu ortamda kurulu değil.
@@ -40,3 +40,12 @@ Taktik faz sırası: P1 → P2 (varsa) → uzaylılar. Komutları yalnızca o an
 ```sh
 gradle test
 ```
+
+## Ağ durumu
+
+`ReliableChannel` (sıra numarası, tek teslim, boşluk algılama, yeniden iletim, sürüm kontrolü) ve
+`UnreliableBus` ile test edilen kayıp/tekrar/kopma senaryoları hazır. Gerçek Firestore adaptörü (`FirebaseSync`)
+henüz yazılmadı: Firebase projesi ve emulator bu ortamda yok. Adaptör, `Link<WireMessage>` arayüzünü
+Firestore belgeleri üzerinden uygulayacak; protokol değişmeyecek.
+Bilinen sınır: giden mesajlar bellekte tutuluyor (kırpma yok), snapshot tabanlı resync henüz yok.
+

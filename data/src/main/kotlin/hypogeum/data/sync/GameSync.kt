@@ -4,32 +4,41 @@ import hypogeum.domain.core.PlayerId
 import hypogeum.domain.core.peer
 
 /**
- * Ağ arayüzü. M3'te senkron (poll) model; FirebaseSync (M6) aynı sözleşmeyi Flow ile sunacak.
- * Sıralama sağlanır: bir gönderenin mesajları gönderim sırasıyla gelir.
+ * Oyun mesajları için ağ arayüzü. Uygulama, sıralama ve yeniden iletim sorumluluğunu taşır:
+ * alıcı, mesajları gönderim sırasıyla ve her biri tam bir kez verir.
  */
 interface GameSync {
     fun send(message: SyncMessage)
     fun poll(): List<SyncMessage>
 }
 
-/** Aynı süreçteki iki koltuk arasında bellek içi taşıma. */
-class LocalHotseatSync {
+/** Ham taşıma: mesaj gönderir ve gelenleri alır. Sıra, kayıp ve tekrar garantisi yoktur. */
+interface Link<T> {
+    fun send(message: T)
+    fun poll(): List<T>
+}
+
+/** Aynı süreçteki iki koltuk arasında bellek içi taşıma. Gönderim anında teslim eder. */
+open class LocalBus<T> {
     private val inbox = mapOf(
-        PlayerId.P1 to ArrayDeque<SyncMessage>(),
-        PlayerId.P2 to ArrayDeque<SyncMessage>(),
+        PlayerId.P1 to ArrayDeque<T>(),
+        PlayerId.P2 to ArrayDeque<T>(),
     )
 
-    fun endpoint(seat: PlayerId): GameSync = object : GameSync {
-        override fun send(message: SyncMessage) {
-            inbox.getValue(seat.peer()).addLast(message)
-        }
+    fun endpoint(seat: PlayerId): Link<T> = object : Link<T> {
+        override fun send(message: T) = deliver(seat.peer(), message)
 
-        override fun poll(): List<SyncMessage> {
+        override fun poll(): List<T> {
             val mine = inbox.getValue(seat)
             val out = mine.toList()
             mine.clear()
             return out
         }
+    }
+
+    /** Alt sınıflar kayıp/tekrar simüle edebilir. */
+    protected open fun deliver(to: PlayerId, message: T) {
+        inbox.getValue(to).addLast(message)
     }
 
     fun hasPending(): Boolean = inbox.values.any { it.isNotEmpty() }

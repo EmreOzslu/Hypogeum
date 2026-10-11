@@ -1,6 +1,7 @@
 package hypogeum.data.sync
 
 import hypogeum.domain.campus.FacilityType
+import hypogeum.domain.campus.Resources
 import hypogeum.domain.core.PlayerId
 import hypogeum.domain.game.GameEngine
 import hypogeum.domain.game.GameEvent
@@ -122,5 +123,44 @@ class HotseatMatchTest {
         }
         assertTrue(match.state(PlayerId.P2).campuses.p2.roster.any { it.id == soldier })
         assertTrue(match.state(PlayerId.P1).shipments.isEmpty())
+    }
+}
+
+class LossyHotseatTest {
+    /** Kayıp ve tekrar altında iki koltuk aynı state'e ulaşır; her adımda digest kontrolü içeride. */
+    @Test
+    fun epochs_resolve_identically_over_a_lossy_link() {
+        val bus = UnreliableBus<WireMessage>(seed = 42, dropPercent = 25, dupPercent = 25)
+        val match = HotseatMatch.withBus(GameEngine.newGame("m", 31), bus)
+        repeat(3) {
+            match.commitPlanning(PlayerId.P1, listOf(StrategicCommand.ClaimNode("gate-bio")))
+            match.commitPlanning(PlayerId.P2, emptyList())
+            var guard = 0
+            while ((match.isWaiting(PlayerId.P1) || match.isWaiting(PlayerId.P2) || match.state(PlayerId.P1) != match.state(PlayerId.P2)) && guard++ < 500) {
+                match.resync()
+            }
+            assertEquals(match.state(PlayerId.P1), match.state(PlayerId.P2))
+        }
+        assertEquals(4, match.state(PlayerId.P1).epoch)
+        assertTrue(bus.dropped > 0)
+    }
+
+    /** Kopma: koltuklar commit ederken hat kapalı; hat açılınca resync ile tek state'e varılır. */
+    @Test
+    fun a_partition_during_planning_heals_after_reconnect() {
+        val bus = UnreliableBus<WireMessage>(seed = 5, dropPercent = 0, dupPercent = 0)
+        val match = HotseatMatch.withBus(GameEngine.newGame("m", 31), bus)
+        bus.partitioned = true
+        match.commitPlanning(PlayerId.P1, emptyList())
+        match.commitPlanning(PlayerId.P2, emptyList())
+        assertEquals(1, match.state(PlayerId.P1).epoch, "partitioned: nothing resolved")
+        bus.partitioned = false
+        var guard = 0
+        while (match.state(PlayerId.P1) != match.state(PlayerId.P2) || match.state(PlayerId.P1).epoch == 1) {
+            match.resync()
+            if (guard++ > 50) break
+        }
+        assertEquals(2, match.state(PlayerId.P1).epoch)
+        assertEquals(match.state(PlayerId.P1), match.state(PlayerId.P2))
     }
 }
