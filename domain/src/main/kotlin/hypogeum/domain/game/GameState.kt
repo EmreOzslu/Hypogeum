@@ -25,24 +25,31 @@ import hypogeum.domain.world.ResourceNode
 import kotlinx.serialization.Serializable
 
 /** Denge/kural sürümü. Denge veya şema değişince artırılır. */
-const val ENGINE_VERSION = "0.3.0"
-const val SCHEMA_VERSION = 3
+const val ENGINE_VERSION = "0.4.0"
+const val SCHEMA_VERSION = 4
 
 @Serializable
 enum class Phase { PLANNING, TACTICAL }
 
 @Serializable
-data class SquadLink(val combatantId: String, val soldierId: String)
+data class SquadLink(val owner: PlayerId, val combatantId: String, val soldierId: String)
 
-/** Sevk edilmiş görev. missions listesinde ilk eleman aktif olandır. */
+/**
+ * Bir bölgeye giden ortak görev. Aynı epoch'ta aynı bölgeye sevk eden oyuncuların squad'ları tek görevde birleşir.
+ * rewardAlloy her kazanan katılımcıya ayrı ayrı ödenir. missions listesinde ilk eleman aktif olandır.
+ */
 @Serializable
 data class Mission(
-    val owner: PlayerId,
+    val participants: List<PlayerId>,
     val regionId: String,
-    val squad: List<SquadLink>,
+    val squads: List<SquadLink>,
     val rewardAlloy: Int,
     val skirmish: SkirmishState,
 )
+
+/** Planlama çözümü sırasında bekleyen sevk. Çözüm bitince görevlere dönüşür ve liste boşalır. */
+@Serializable
+data class PendingDispatch(val owner: PlayerId, val regionId: String, val soldierIds: List<String>)
 
 @Serializable
 data class GameState(
@@ -57,6 +64,7 @@ data class GameState(
     val campuses: PerPlayer<Campus>,
     val world: World,
     val missions: List<Mission>,
+    val pendingDispatches: List<PendingDispatch>,
     /** Bu epoch'ta kazanılan bölgeler (tehdit düşürür). Epoch sonunda temizlenir. */
     val victories: List<String>,
 )
@@ -70,6 +78,7 @@ sealed interface GameEvent {
     data class SoldierRecruited(val owner: PlayerId, val soldierId: String, val name: String) : GameEvent
     data class ResourcesProduced(val owner: PlayerId, val amount: Resources) : GameEvent
     data class SquadDispatched(val owner: PlayerId, val regionId: String, val size: Int) : GameEvent
+    data class MissionLaunched(val regionId: String, val participants: List<PlayerId>) : GameEvent
     data class Tactical(val owner: PlayerId, val event: SkirmishEvent) : GameEvent
     data class SoldierKilled(val owner: PlayerId, val soldierId: String) : GameEvent
     data class SoldierInjured(val owner: PlayerId, val soldierId: String) : GameEvent
@@ -113,6 +122,7 @@ object GameEngine {
             campuses = rosters.map { Campus.empty(it) },
             world = world,
             missions = emptyList(),
+            pendingDispatches = emptyList(),
             victories = emptyList(),
         )
     }
@@ -142,15 +152,20 @@ object GameEngine {
             }
         }
 
-        if (s.missions.isNotEmpty()) return GameStep.Ok(s.copy(phase = Phase.TACTICAL), events)
+        if (s.pendingDispatches.isNotEmpty()) {
+            val launched = Strategy.launchMissions(s)
+            launched.missions.forEach { events += GameEvent.MissionLaunched(it.regionId, it.participants) }
+            return GameStep.Ok(launched.copy(phase = Phase.TACTICAL), events)
+        }
         val ended = Strategy.endEpoch(s)
         return GameStep.Ok(ended.state, events + ended.events)
     }
 
-    /** Aktif görevin sahibinin taktik komutu. Başka oyuncunun komutu reddedilir. */
+    /** Aktif görevin taktik komutu. Yalnızca o anki faz sahibi (actor) komut verebilir. */
     fun tacticalCommand(state: GameState, actor: PlayerId, cmd: SkirmishCommand): GameStep {
         val m = state.missions.firstOrNull() ?: return GameStep.Rejected("no mission in progress")
-        if (m.owner != actor) return GameStep.Rejected("not your mission")
+        if (actor !in m.participants) return GameStep.Rejected("not part of this mission")
+        if (m.skirmish.activeOwner != actor) return GameStep.Rejected("not your turn")
         return when (val r = Skirmish.apply(m.skirmish, cmd)) {
             is StepResult.Rejected -> GameStep.Rejected(r.reason)
             is StepResult.Ok -> {

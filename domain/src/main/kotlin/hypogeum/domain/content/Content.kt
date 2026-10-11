@@ -22,12 +22,13 @@ object Content {
     val CLAIM_COST = Resources(alloy = 2)
     const val MAX_THREAT = 3
     const val MIN_THREAT = 1
-    const val MAX_ALIENS = 3
+    const val MAX_ALIENS = 4
 
     data class NodeSpec(val id: String, val kind: ResourceKind, val yieldPerEpoch: Int)
 
     data class RegionSpec(val id: String, val name: String, val baseThreat: Int, val nodes: List<NodeSpec>) {
-        fun alienCount(threat: Int): Int = minOf(threat + 1, MAX_ALIENS)
+        /** Uzaylı sayısı: tehdit + katılımcı sayısı, en fazla MAX_ALIENS. */
+        fun alienCount(threat: Int, participants: Int): Int = minOf(threat + participants, MAX_ALIENS)
         fun reward(threat: Int): Int = threat * 2
     }
 

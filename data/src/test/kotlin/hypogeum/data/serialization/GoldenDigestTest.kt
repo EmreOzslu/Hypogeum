@@ -16,6 +16,6 @@ class GoldenDigestTest {
     }
 
     private companion object {
-        const val PINNED = "dde0d39aa1d1a95d80967bdd566a4e842df1e17f468872f6cbd4053bceb008d4"
+        const val PINNED = "23dd23df28484574cbda49fe5a3a5887cf629272d1ffebec5d7f0fdd44227e16"
     }
 }

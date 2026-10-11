@@ -1,6 +1,7 @@
 package hypogeum.domain.tactics
 
 import hypogeum.domain.core.Pos
+import hypogeum.domain.core.PlayerId
 import hypogeum.domain.core.RngState
 import kotlin.random.Random
 import kotlin.test.Test
@@ -9,6 +10,40 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 class SkirmishTest {
+    @Test
+    fun co_op_phases_pass_from_p1_to_p2_then_to_aliens() {
+        val s0 = scene(
+            listOf("........", "........"),
+            c("p1", Side.PLAYER, 0, 0),
+            c("p2", Side.PLAYER, 1, 0, owner = PlayerId.P2),
+            c("a1", Side.ALIEN, 7, 0, aim = 0),
+        ).copy(participants = listOf(PlayerId.P1, PlayerId.P2))
+
+        // P2 kendi fazında değilken hamle yapamaz.
+        assertIs<StepResult.Rejected>(Skirmish.apply(s0, SkirmishCommand.Move("p2", Pos(1, 1))))
+        val s1 = ok(Skirmish.apply(s0, SkirmishCommand.EndTurn))
+        assertEquals(PlayerId.P2, s1.activeOwner)
+        assertEquals(1, s1.round)
+        assertIs<StepResult.Rejected>(Skirmish.apply(s1, SkirmishCommand.Move("p1", Pos(1, 1))))
+        assertIs<StepResult.Ok>(Skirmish.apply(s1, SkirmishCommand.Move("p2", Pos(1, 1))))
+        val s2 = ok(Skirmish.apply(s1, SkirmishCommand.EndTurn))
+        assertEquals(PlayerId.P1, s2.activeOwner)
+        assertEquals(2, s2.round)
+        assertEquals(PLAYER_AP, s2.byId("p1")!!.ap)
+    }
+
+    @Test
+    fun co_op_legal_commands_belong_to_the_active_owner_only() {
+        val s = scene(
+            listOf("........", "........"),
+            c("p1", Side.PLAYER, 0, 0),
+            c("p2", Side.PLAYER, 1, 0, owner = PlayerId.P2),
+            c("a1", Side.ALIEN, 7, 0),
+        ).copy(participants = listOf(PlayerId.P1, PlayerId.P2))
+        val moves = Skirmish.legalCommands(s).filterIsInstance<SkirmishCommand.Move>()
+        assertTrue(moves.isNotEmpty() && moves.all { it.unitId == "p1" })
+    }
+
     private fun ok(r: StepResult): SkirmishState {
         assertIs<StepResult.Ok>(r, "expected Ok but was $r")
         return r.state
@@ -21,12 +56,13 @@ class SkirmishTest {
         map = TacticalMap.parse(rows),
         combatants = units.toList(),
         round = 1,
-        active = Side.PLAYER,
+        participants = listOf(PlayerId.P1),
+        activeOwner = PlayerId.P1,
         winner = null,
     )
 
-    private fun c(id: String, side: Side, x: Int, y: Int, hp: Int = 3, ap: Int = 4, aim: Int = 70, range: Int = 6) =
-        Combatant(id, side, Pos(x, y), hp = hp, aim = aim, damage = 2, range = range, ap = ap)
+    private fun c(id: String, side: Side, x: Int, y: Int, hp: Int = 3, ap: Int = 4, aim: Int = 70, range: Int = 6, owner: PlayerId = PlayerId.P1) =
+        Combatant(id, side, if (side == Side.PLAYER) owner else null, Pos(x, y), hp = hp, aim = aim, damage = 2, range = range, ap = ap)
 
     @Test
     fun wall_blocks_line_of_sight() {
@@ -102,7 +138,7 @@ class SkirmishTest {
         val start = Skirmish.newGame(seed = 5)
         val next = ok(Skirmish.apply(start, SkirmishCommand.EndTurn))
         assertEquals(2, next.round)
-        assertEquals(Side.PLAYER, next.active)
+        assertEquals(PlayerId.P1, next.activeOwner)
         assertEquals(PLAYER_AP, next.living(Side.PLAYER).first().ap)
     }
 

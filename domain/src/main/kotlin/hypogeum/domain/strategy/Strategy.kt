@@ -16,10 +16,12 @@ import hypogeum.domain.game.GameEvent
 import hypogeum.domain.game.GameState
 import hypogeum.domain.game.GameStep
 import hypogeum.domain.game.Mission
+import hypogeum.domain.game.PendingDispatch
 import hypogeum.domain.game.Phase
 import hypogeum.domain.game.SquadLink
 import hypogeum.domain.roster.Soldier
 import hypogeum.domain.roster.SoldierFactory
+import hypogeum.domain.tactics.Combatant
 import hypogeum.domain.tactics.Side
 import hypogeum.domain.tactics.Skirmish
 import hypogeum.domain.world.Incursion
@@ -77,34 +79,65 @@ internal object Strategy {
         val ids = cmd.soldierIds
         if (ids.isEmpty() || ids.size > Content.MAX_SQUAD) return GameStep.Rejected("squad size must be 1..${Content.MAX_SQUAD}")
         if (ids.distinct().size != ids.size) return GameStep.Rejected("duplicate soldier in squad")
-        val region = s.world.region(cmd.regionId) ?: return GameStep.Rejected("unknown region ${cmd.regionId}")
+        if (s.pendingDispatches.any { it.owner == actor }) return GameStep.Rejected("one squad per seat per epoch")
+        if (s.world.region(cmd.regionId) == null) return GameStep.Rejected("unknown region ${cmd.regionId}")
         val squad = ids.map { id -> c.soldier(id) ?: return GameStep.Rejected("no soldier $id") }
         squad.firstOrNull { it.injuryEpochs > 0 }?.let { return GameStep.Rejected("${it.id} is injured") }
-        squad.firstOrNull { sol -> s.missions.any { m -> m.squad.any { it.soldierId == sol.id } } }
-            ?.let { return GameStep.Rejected("${it.id} is already on a mission") }
+        squad.firstOrNull { sol -> isBusy(s, sol.id) }?.let { return GameStep.Rejected("${it.id} is already on a mission") }
+        val next = s.copy(pendingDispatches = s.pendingDispatches + PendingDispatch(actor, cmd.regionId, ids))
+        return GameStep.Ok(next, listOf(GameEvent.SquadDispatched(actor, cmd.regionId, ids.size)))
+    }
 
-        val (seed, rng2) = Rng.nextLong(s.rng)
-        val links = squad.mapIndexed { i, sol -> SquadLink("p${i + 1}", sol.id) }
-        val players = squad.mapIndexed { i, sol ->
-            Skirmish.squadmate(
-                id = "p${i + 1}",
-                pos = Skirmish.DEPLOY_PLAYER[i],
-                hp = sol.hp,
-                aim = sol.stats.aim,
-                damage = sol.stats.damage,
+    private fun isBusy(s: GameState, soldierId: String): Boolean =
+        s.missions.any { m -> m.squads.any { it.soldierId == soldierId } } ||
+            s.pendingDispatches.any { soldierId in it.soldierIds }
+
+    /**
+     * Çözüm sonu: bekleyen sevkleri bölgeye göre gruplar. Aynı bölgeye giden squad'lar tek ortak görev olur.
+     * Görev sırası, bölgelerin ilk sevk sırasıdır.
+     */
+    fun launchMissions(s: GameState): GameState {
+        var rng: RngState = s.rng
+        val regionOrder = s.pendingDispatches.map { it.regionId }.distinct()
+        val missions = regionOrder.map { regionId ->
+            val group = s.pendingDispatches.filter { it.regionId == regionId }.sortedBy { it.owner.ordinal }
+            val region = requireNotNull(s.world.region(regionId))
+            val spec = requireNotNull(Content.regionSpec(regionId))
+            val (seed, next) = Rng.nextLong(rng)
+            rng = next
+
+            val links = mutableListOf<SquadLink>()
+            val combatants = mutableListOf<Combatant>()
+            var n = 0
+            for (d in group) {
+                val c = s.campuses[d.owner]
+                for ((i, soldierId) in d.soldierIds.withIndex()) {
+                    n++
+                    val sol = requireNotNull(c.soldier(soldierId))
+                    combatants += Skirmish.squadmate(
+                        id = "p$n",
+                        owner = d.owner,
+                        pos = Skirmish.DEPLOY_SQUAD[d.owner][i],
+                        hp = sol.hp,
+                        aim = sol.stats.aim,
+                        damage = sol.stats.damage,
+                    )
+                    links += SquadLink(d.owner, "p$n", soldierId)
+                }
+            }
+            val participants = group.map { it.owner }
+            val aliens = (0 until spec.alienCount(region.threat, participants.size)).map { i ->
+                Skirmish.alien("a${i + 1}", Skirmish.DEPLOY_ALIEN[i])
+            }
+            Mission(
+                participants = participants,
+                regionId = regionId,
+                squads = links,
+                rewardAlloy = spec.reward(region.threat),
+                skirmish = Skirmish.start(seed, Skirmish.defaultMap(), combatants + aliens),
             )
         }
-        val spec = Content.regionSpec(region.id) ?: return GameStep.Rejected("no spec for ${region.id}")
-        val aliens = (0 until spec.alienCount(region.threat)).map { i -> Skirmish.alien("a${i + 1}", Skirmish.DEPLOY_ALIEN[i]) }
-        val mission = Mission(
-            owner = actor,
-            regionId = region.id,
-            squad = links,
-            rewardAlloy = spec.reward(region.threat),
-            skirmish = Skirmish.start(seed, Skirmish.defaultMap(), players + aliens),
-        )
-        val next = s.copy(rng = rng2, missions = s.missions + mission)
-        return GameStep.Ok(next, listOf(GameEvent.SquadDispatched(actor, region.id, squad.size)))
+        return s.copy(rng = rng, missions = missions, pendingDispatches = emptyList())
     }
 
     /** Epoch sonu: üretim ve düğüm verimi, kuyruk ilerlemesi, dünya tiki, yaralı iyileşmesi. */
@@ -223,46 +256,48 @@ internal object Strategy {
         return w
     }
 
-    /** Aktif görev bitti: ölüm, yaralanma, XP, ödül; kalan görev varsa taktik sürer, yoksa epoch biter. */
+    /** Aktif görev bitti: her katılımcının kadrosu için ölüm, yaralanma, XP, ödül; kalan görev varsa taktik sürer. */
     fun finishMission(s: GameState): GameStep.Ok {
         val m = s.missions.first()
         val winner = requireNotNull(m.skirmish.winner) { "mission not finished" }
         val won = winner == Side.PLAYER
         val survivors = m.skirmish.living(Side.PLAYER).associateBy { it.id }
         val events = mutableListOf<GameEvent>()
-        val owner = m.owner
-        val c = s.campuses[owner]
-        val roster = c.roster.toMutableList()
-        val gone = mutableSetOf<String>()
+        var campuses = s.campuses
 
-        for (link in m.squad) {
-            val idx = roster.indexOfFirst { it.id == link.soldierId }
-            if (idx < 0) continue
-            val sol = roster[idx]
-            val combatant = survivors[link.combatantId]
-            if (combatant == null) {
-                gone += sol.id
-                events += GameEvent.SoldierKilled(owner, sol.id)
-                continue
+        for (owner in m.participants) {
+            val c = campuses[owner]
+            val roster = c.roster.toMutableList()
+            val gone = mutableSetOf<String>()
+            for (link in m.squads.filter { it.owner == owner }) {
+                val idx = roster.indexOfFirst { it.id == link.soldierId }
+                if (idx < 0) continue
+                val sol = roster[idx]
+                val combatant = survivors[link.combatantId]
+                if (combatant == null) {
+                    gone += sol.id
+                    events += GameEvent.SoldierKilled(owner, sol.id)
+                    continue
+                }
+                var updated = sol.copy(hp = combatant.hp, xp = sol.xp + if (won) 2 else 1)
+                if (updated.hp <= Content.INJURY_HP_THRESHOLD) {
+                    updated = updated.copy(injuryEpochs = Content.INJURY_EPOCHS)
+                    events += GameEvent.SoldierInjured(owner, sol.id)
+                }
+                roster[idx] = updated
             }
-            var updated = sol.copy(hp = combatant.hp, xp = sol.xp + if (won) 2 else 1)
-            if (updated.hp <= hypogeum.domain.content.Content.INJURY_HP_THRESHOLD) {
-                updated = updated.copy(injuryEpochs = Content.INJURY_EPOCHS)
-                events += GameEvent.SoldierInjured(owner, sol.id)
+            var stock = c.stock
+            if (won) {
+                stock += Resources(alloy = m.rewardAlloy)
+                events += GameEvent.ResourcesProduced(owner, Resources(alloy = m.rewardAlloy))
             }
-            roster[idx] = updated
+            events += GameEvent.MissionEnded(owner, won)
+            campuses = campuses.with(owner, c.copy(stock = stock, roster = roster.filterNot { it.id in gone }))
         }
-
-        var stock = c.stock
-        if (won) {
-            stock += Resources(alloy = m.rewardAlloy)
-            events += GameEvent.ResourcesProduced(owner, Resources(alloy = m.rewardAlloy))
-        }
-        events += GameEvent.MissionEnded(owner, won)
 
         val rest = s.missions.drop(1)
         val updated = s.copy(
-            campuses = s.campuses.with(owner, c.copy(stock = stock, roster = roster.filterNot { it.id in gone })),
+            campuses = campuses,
             missions = rest,
             victories = if (won) s.victories + m.regionId else s.victories,
         )

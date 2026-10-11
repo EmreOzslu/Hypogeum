@@ -90,13 +90,14 @@ class CampaignTest {
         val injured = s0.copy(campuses = s0.campuses.with(PlayerId.P1, s0.campuses.p1.copy(roster = listOf(first.copy(injuryEpochs = 2)) + s0.campuses.p1.roster.drop(1))))
         assertEquals(listOf("${first.id} is injured"), rejections(injured, p1 = listOf(StrategicCommand.Dispatch("dock", listOf(first.id)))))
         assertEquals(listOf("unknown region moon"), rejections(s0, p1 = listOf(StrategicCommand.Dispatch("moon", listOf(first.id)))))
+        // Bir koltuk epoch başına tek kadro sevk eder.
         assertEquals(
-            listOf("${first.id} is already on a mission"),
+            listOf("one squad per seat per epoch"),
             rejections(
                 s0,
                 p1 = listOf(
                     StrategicCommand.Dispatch("dock", listOf(first.id)),
-                    StrategicCommand.Dispatch("gate", listOf(first.id)),
+                    StrategicCommand.Dispatch("gate", listOf(s0.campuses.p1.roster[1].id)),
                 ),
             ),
         )
@@ -108,12 +109,33 @@ class CampaignTest {
         val ids = s0.campuses.p1.roster.map { it.id }
         val s = resolve(s0, p1 = listOf(StrategicCommand.Dispatch("dock", ids)))
         assertEquals(Phase.TACTICAL, s.phase)
-        assertEquals(PlayerId.P1, s.missions.first().owner)
-        assertEquals(2, s.missions.first().squad.size)
-        // Sıra P2'de değil, P1'de: P2'nin taktik komutu reddedilmeli.
+        assertEquals(listOf(PlayerId.P1), s.missions.first().participants)
+        assertEquals(2, s.missions.first().squads.size)
+        // Sıra P1'de: P2'nin taktik komutu reddedilmeli.
         val notMine = GameEngine.tacticalCommand(s, PlayerId.P2, SkirmishCommand.EndTurn)
-        assertEquals(GameStep.Rejected("not your mission"), notMine)
+        assertEquals(GameStep.Rejected("not part of this mission"), notMine)
         assertIs<GameStep.Ok>(GameEngine.tacticalCommand(s, PlayerId.P1, SkirmishCommand.EndTurn))
+    }
+
+    @Test
+    fun squads_sent_to_the_same_region_merge_into_one_co_op_mission() {
+        val s0 = GameEngine.newGame("m", 3)
+        val p1 = s0.campuses.p1.roster[0].id
+        val p2 = s0.campuses.p2.roster[0].id
+        val r = GameEngine.resolveEpoch(
+            s0,
+            PerPlayer(listOf(StrategicCommand.Dispatch("gate", listOf(p1))), listOf(StrategicCommand.Dispatch("gate", listOf(p2)))),
+        )
+        assertIs<GameStep.Ok>(r)
+        val s = r.state
+        assertEquals(1, s.missions.size)
+        val m = s.missions.single()
+        assertEquals(listOf(PlayerId.P1, PlayerId.P2), m.participants)
+        assertEquals(2, m.squads.size)
+        assertEquals(1, m.skirmish.ownedBy(PlayerId.P1).size)
+        assertEquals(1, m.skirmish.ownedBy(PlayerId.P2).size)
+        // gate tehdidi 2, iki katılımcı: 4 uzaylı (üst sınır)
+        assertEquals(4, m.skirmish.living(hypogeum.domain.tactics.Side.ALIEN).size)
     }
 
     @Test
@@ -207,7 +229,7 @@ class CampaignTest {
                     assertInvariants(s)
                 }
             } else {
-                val owner = s.missions.first().owner
+                val owner = s.missions.first().skirmish.activeOwner
                 val options = Skirmish.legalCommands(s.missions.first().skirmish)
                 val r = GameEngine.tacticalCommand(s, owner, options[chooser.nextInt(options.size)])
                 assertIs<GameStep.Ok>(r)

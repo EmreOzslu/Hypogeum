@@ -1,6 +1,8 @@
 package hypogeum.domain.tactics
 
+import hypogeum.domain.core.PerPlayer
 import hypogeum.domain.core.Pos
+import hypogeum.domain.core.PlayerId
 import hypogeum.domain.core.Rng
 import hypogeum.domain.core.RngState
 import kotlinx.serialization.Serializable
@@ -17,11 +19,12 @@ private const val MAX_HIT = 95
 @Serializable
 enum class Side { PLAYER, ALIEN }
 
-/** Savaşçı: oyuncu askeri veya uzaylı. Ölen birim listeden çıkarılır. */
+/** Savaşçı. Oyuncu birimlerinin sahibi var; uzaylıların sahibi yok (owner = null). Ölen birim listeden çıkarılır. */
 @Serializable
 data class Combatant(
     val id: String,
     val side: Side,
+    val owner: PlayerId?,
     val pos: Pos,
     val hp: Int,
     val aim: Int,
@@ -30,6 +33,10 @@ data class Combatant(
     val ap: Int,
 )
 
+/**
+ * Tur sırası: her round'da participants sırasıyla her oyuncunun fazı, sonra uzaylı fazı.
+ * activeOwner, şu an hamle yapan oyuncu. Uzaylı fazı arka planda otomatik oynanır.
+ */
 @Serializable
 data class SkirmishState(
     val seed: Long,
@@ -37,10 +44,13 @@ data class SkirmishState(
     val map: TacticalMap,
     val combatants: List<Combatant>,
     val round: Int,
-    val active: Side,
+    val participants: List<PlayerId>,
+    val activeOwner: PlayerId,
     val winner: Side?,
 ) {
     fun living(side: Side): List<Combatant> = combatants.filter { it.side == side }
+
+    fun ownedBy(owner: PlayerId): List<Combatant> = combatants.filter { it.side == Side.PLAYER && it.owner == owner }
 
     fun byId(id: String): Combatant? = combatants.firstOrNull { it.id == id }
 
@@ -51,8 +61,8 @@ data class SkirmishState(
 
     fun remove(id: String): SkirmishState = copy(combatants = combatants.filterNot { it.id == id })
 
-    fun withAp(side: Side, amount: Int): SkirmishState =
-        copy(combatants = combatants.map { if (it.side == side) it.copy(ap = amount) else it })
+    fun withAp(filter: (Combatant) -> Boolean, amount: Int): SkirmishState =
+        copy(combatants = combatants.map { if (filter(it)) it.copy(ap = amount) else it })
 }
 
 @Serializable
@@ -66,6 +76,7 @@ sealed interface SkirmishEvent {
     data class Moved(val unitId: String, val to: Pos) : SkirmishEvent
     data class Shot(val attackerId: String, val targetId: String, val hit: Boolean, val damage: Int) : SkirmishEvent
     data class Died(val unitId: String) : SkirmishEvent
+    data class PhaseEnded(val owner: PlayerId) : SkirmishEvent
     data class TurnEnded(val round: Int) : SkirmishEvent
     data class Victory(val side: Side, val reason: String) : SkirmishEvent
 }
@@ -88,34 +99,43 @@ object Skirmish {
         "........",
     )
 
-    val DEPLOY_PLAYER: List<Pos> = listOf(Pos(0, 7), Pos(1, 6), Pos(2, 7))
-    val DEPLOY_ALIEN: List<Pos> = listOf(Pos(7, 0), Pos(5, 0), Pos(7, 2))
+    /** Her oyuncunun asker çıkış noktaları (sıra = squad indeksi). */
+    val DEPLOY_SQUAD: PerPlayer<List<Pos>> = PerPlayer(
+        p1 = listOf(Pos(0, 7), Pos(1, 6), Pos(2, 7)),
+        p2 = listOf(Pos(5, 7), Pos(6, 6), Pos(7, 7)),
+    )
+    val DEPLOY_ALIEN: List<Pos> = listOf(Pos(7, 0), Pos(5, 0), Pos(7, 2), Pos(4, 2))
 
     fun defaultMap(): TacticalMap = TacticalMap.parse(MAP_ROWS)
 
-    fun squadmate(id: String, pos: Pos, hp: Int, aim: Int, damage: Int): Combatant =
-        Combatant(id, Side.PLAYER, pos, hp = hp, aim = aim, damage = damage, range = 6, ap = PLAYER_AP)
+    fun squadmate(id: String, owner: PlayerId, pos: Pos, hp: Int, aim: Int, damage: Int): Combatant =
+        Combatant(id, Side.PLAYER, owner, pos, hp = hp, aim = aim, damage = damage, range = 6, ap = PLAYER_AP)
 
     fun alien(id: String, pos: Pos): Combatant =
-        Combatant(id, Side.ALIEN, pos, hp = 3, aim = 60, damage = 1, range = 4, ap = 0)
+        Combatant(id, Side.ALIEN, owner = null, pos, hp = 3, aim = 60, damage = 1, range = 4, ap = 0)
 
-    /** Hazır sahne: rng durumu seed'den, birimler verilen listeden. */
-    fun start(seed: Long, map: TacticalMap, combatants: List<Combatant>): SkirmishState = SkirmishState(
-        seed = seed,
-        rng = RngState(seed),
-        map = map,
-        combatants = combatants,
-        round = 1,
-        active = Side.PLAYER,
-        winner = null,
-    )
+    /** Hazır sahne. Katılımcılar birimlerin sahiplerinden çıkar; ilk hamle sırası P1'dedir (varsa). */
+    fun start(seed: Long, map: TacticalMap, combatants: List<Combatant>): SkirmishState {
+        val participants = combatants.mapNotNull { it.owner }.distinct().sortedBy { it.ordinal }
+        require(participants.isNotEmpty()) { "a skirmish needs at least one player unit" }
+        return SkirmishState(
+            seed = seed,
+            rng = RngState(seed),
+            map = map,
+            combatants = combatants,
+            round = 1,
+            participants = participants,
+            activeOwner = participants.first(),
+            winner = null,
+        )
+    }
 
-    /** M1 varsayılan skirmish'i: üç asker, üç uzaylı. */
+    /** M1 varsayılan skirmish'i: P1'in üç askeri, üç uzaylı. */
     fun newGame(seed: Long): SkirmishState = start(
         seed,
         defaultMap(),
-        DEPLOY_PLAYER.mapIndexed { i, p -> squadmate("p${i + 1}", p, hp = 4, aim = 70, damage = 2) } +
-            DEPLOY_ALIEN.mapIndexed { i, p -> alien("a${i + 1}", p) },
+        DEPLOY_SQUAD.p1.mapIndexed { i, p -> squadmate("p${i + 1}", PlayerId.P1, p, hp = 4, aim = 70, damage = 2) } +
+            DEPLOY_ALIEN.take(3).mapIndexed { i, p -> alien("a${i + 1}", p) },
     )
 
     fun apply(state: SkirmishState, cmd: SkirmishCommand): StepResult {
@@ -127,16 +147,16 @@ object Skirmish {
         }
     }
 
-    /** Oyuncunun o an yapabileceği tüm geçerli komutlar (CLI yardımı ve fuzz testleri için). */
+    /** Aktif oyuncunun o an yapabileceği tüm geçerli komutlar (CLI yardımı ve fuzz testleri için). */
     fun legalCommands(state: SkirmishState): List<SkirmishCommand> {
         if (state.winner != null) return emptyList()
         val out = mutableListOf<SkirmishCommand>()
-        for (c in state.living(state.active)) {
+        for (c in state.ownedBy(state.activeOwner)) {
             for (i in 0 until state.map.width * state.map.height) {
                 val cmd = SkirmishCommand.Move(c.id, state.map.posOf(i))
                 if (apply(state, cmd) is StepResult.Ok) out += cmd
             }
-            for (t in state.living(opposite(state.active))) {
+            for (t in state.living(Side.ALIEN)) {
                 val cmd = SkirmishCommand.Shoot(c.id, t.id)
                 if (apply(state, cmd) is StepResult.Ok) out += cmd
             }
@@ -146,7 +166,7 @@ object Skirmish {
     }
 
     private fun move(s: SkirmishState, cmd: SkirmishCommand.Move): StepResult {
-        val u = ownUnit(s, cmd.unitId) ?: return StepResult.Rejected("not your unit: ${cmd.unitId}")
+        val u = ownUnit(s, cmd.unitId) ?: return StepResult.Rejected("not an active unit: ${cmd.unitId}")
         if (!s.map.inside(cmd.to)) return StepResult.Rejected("outside map")
         if (cmd.to == u.pos) return StepResult.Rejected("already there")
         if (s.occupied(cmd.to)) return StepResult.Rejected("tile occupied")
@@ -158,7 +178,7 @@ object Skirmish {
     }
 
     private fun shoot(s: SkirmishState, cmd: SkirmishCommand.Shoot): StepResult {
-        val a = ownUnit(s, cmd.unitId) ?: return StepResult.Rejected("not your unit: ${cmd.unitId}")
+        val a = ownUnit(s, cmd.unitId) ?: return StepResult.Rejected("not an active unit: ${cmd.unitId}")
         val t = s.byId(cmd.targetId)?.takeIf { it.side != a.side } ?: return StepResult.Rejected("invalid target")
         if (a.ap < SHOT_AP_COST) return StepResult.Rejected("not enough AP to shoot")
         lineOfFire(s.map, a, t)?.let { return StepResult.Rejected(it) }
@@ -167,10 +187,17 @@ object Skirmish {
         return StepResult.Ok(after, events)
     }
 
+    /** Oyuncunun fazı biter: sıradaki oyuncuya geçer, son oyuncuysa uzaylılar oynar ve yeni tur başlar. */
     private fun endTurn(s: SkirmishState): StepResult {
-        if (s.active != Side.PLAYER) return StepResult.Rejected("not the player's phase")
-        val events = mutableListOf<SkirmishEvent>(SkirmishEvent.TurnEnded(s.round))
-        var st = s.copy(active = Side.ALIEN).withAp(Side.ALIEN, ALIEN_AP)
+        val events = mutableListOf<SkirmishEvent>(SkirmishEvent.PhaseEnded(s.activeOwner))
+        val idx = s.participants.indexOf(s.activeOwner)
+        if (idx < s.participants.size - 1) {
+            val next = s.participants[idx + 1]
+            return StepResult.Ok(s.copy(activeOwner = next).withAp({ it.owner == next }, PLAYER_AP), events)
+        }
+
+        events += SkirmishEvent.TurnEnded(s.round)
+        var st = s.withAp({ it.side == Side.ALIEN }, ALIEN_AP)
         for (id in s.living(Side.ALIEN).map { it.id }) {
             if (st.winner != null) break
             st = alienAct(st, id, events)
@@ -180,16 +207,17 @@ object Skirmish {
             return StepResult.Ok(st.copy(winner = Side.ALIEN), events)
         }
         if (st.winner == null) {
-            st = st.copy(round = st.round + 1, active = Side.PLAYER).withAp(Side.PLAYER, PLAYER_AP)
+            val first = st.participants.first()
+            st = st.copy(round = st.round + 1, activeOwner = first).withAp({ it.owner == first }, PLAYER_AP)
         }
         return StepResult.Ok(st, events)
     }
 
-    /** Uzaylı tek karar turu: yakın hedefe doğru en iyi kareye yürü, mümkünse ateş et. */
+    /** Uzaylı tek karar turu: en yakın oyuncu birimine doğru en iyi kareye yürü, mümkünse ateş et. */
     private fun alienAct(s0: SkirmishState, id: String, events: MutableList<SkirmishEvent>): SkirmishState {
         var s = s0
-        val target = s.living(Side.PLAYER).minByOrNull { chebyshev(it.pos, s.byId(id)!!.pos) } ?: return s
         val me = s.byId(id) ?: return s
+        val target = s.living(Side.PLAYER).minByOrNull { chebyshev(it.pos, me.pos) } ?: return s
         if (lineOfFire(s.map, me, target) == null && me.ap >= SHOT_AP_COST) {
             return resolveShot(s.replace(me.copy(ap = me.ap - SHOT_AP_COST)), me, target, events)
         }
@@ -269,10 +297,9 @@ object Skirmish {
         return out
     }
 
+    /** Birim, aktif oyuncunun ve yaşayan bir oyuncu biriminin ise döner. */
     private fun ownUnit(s: SkirmishState, id: String): Combatant? =
-        s.byId(id)?.takeIf { it.side == s.active }
-
-    private fun opposite(side: Side): Side = if (side == Side.PLAYER) Side.ALIEN else Side.PLAYER
+        s.byId(id)?.takeIf { it.side == Side.PLAYER && it.owner == s.activeOwner }
 
     private fun chebyshev(a: Pos, b: Pos): Int = max(abs(a.x - b.x), abs(a.y - b.y))
 }

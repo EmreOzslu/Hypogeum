@@ -37,7 +37,7 @@ fun main(args: Array<String>) {
     while (true) {
         val state = match.state(seat)
         if (state.phase == Phase.TACTICAL) {
-            seat = state.missions.first().owner
+            seat = state.missions.first().skirmish.activeOwner
             print("[görev ${state.missions.first().regionId} · $seat · tur ${state.missions.first().skirmish.round}] > ")
         } else {
             print("[$seat · epoch ${state.epoch} · taslak ${drafts.getValue(seat).size}] > ")
@@ -285,6 +285,7 @@ fun describe(e: GameEvent): String = when (e) {
     is GameEvent.MissionEnded -> "[${e.owner}] ${if (e.won) "GÖREV BAŞARILI" else "GÖREV BAŞARISIZ"}"
     is GameEvent.IncursionWarning -> "UYARI: ${e.regionId} bölgesine epoch ${e.arrivalEpoch}'de saldırı"
     is GameEvent.IncursionArrived -> "SALDIRI: ${e.regionId} bölgesi işgal edildi, düğüm talepleri düştü"
+    is GameEvent.MissionLaunched -> "GÖREV BAŞLADI: ${e.regionId} (${e.participants.joinToString(" + ")})"
     is GameEvent.EpochStarted -> "--- Epoch ${e.epoch} ---"
 }
 
@@ -293,6 +294,7 @@ fun describeSkirmish(e: SkirmishEvent): String = when (e) {
     is SkirmishEvent.Shot ->
         if (e.hit) "${e.attackerId} ${e.targetId}'i vurdu (-${e.damage})" else "${e.attackerId} ıskaladı (${e.targetId})"
     is SkirmishEvent.Died -> "${e.unitId} öldü"
+    is SkirmishEvent.PhaseEnded -> "${e.owner} fazını bitirdi"
     is SkirmishEvent.TurnEnded -> "Tur ${e.round} bitti. Uzaylılar hareket ediyor."
     is SkirmishEvent.Victory -> "Savaş bitti: ${if (e.side == Side.PLAYER) "squad kazandı" else "uzaylılar kazandı"} (${e.reason})"
 }

@@ -47,7 +47,7 @@ class HotseatMatchTest {
         assertEquals(Phase.TACTICAL, match.state(PlayerId.P2).phase)
 
         val rejected = match.tacticalCommand(PlayerId.P2, SkirmishCommand.EndTurn)
-        assertEquals(GameStep.Rejected("not your mission"), rejected)
+        assertEquals(GameStep.Rejected("not part of this mission"), rejected)
 
         val legal = Skirmish.legalCommands(match.state(PlayerId.P1).missions.first().skirmish)
         val move = legal.first { it is SkirmishCommand.Move }
@@ -62,12 +62,46 @@ class HotseatMatchTest {
             val p1 = if (epoch % 2 == 0) listOf(StrategicCommand.ClaimNode("gate-cells")) else emptyList()
             match.commitPlanning(PlayerId.P1, p1)
             while (match.state(PlayerId.P1).phase == Phase.TACTICAL) {
-                val owner = match.state(PlayerId.P1).missions.first().owner
+                val owner = match.state(PlayerId.P1).missions.first().skirmish.activeOwner
                 val options = Skirmish.legalCommands(match.state(PlayerId.P1).missions.first().skirmish)
                 match.tacticalCommand(owner, options.last())
             }
             match.commitPlanning(PlayerId.P2, emptyList())
             assertEquals(match.state(PlayerId.P1), match.state(PlayerId.P2))
         }
+    }
+
+    @Test
+    fun co_op_mission_alternates_turns_and_both_seats_stay_in_sync() {
+        val match = HotseatMatch.start(GameEngine.newGame("m", 17))
+        val p1 = match.state(PlayerId.P1).campuses.p1.roster.first().id
+        val p2 = match.state(PlayerId.P1).campuses.p2.roster.first().id
+        match.commitPlanning(PlayerId.P1, listOf(StrategicCommand.Dispatch("gate", listOf(p1))))
+        val launched = match.commitPlanning(PlayerId.P2, listOf(StrategicCommand.Dispatch("gate", listOf(p2))))
+        assertTrue(launched.any { it is GameEvent.MissionLaunched })
+        assertEquals(Phase.TACTICAL, match.state(PlayerId.P2).phase)
+        assertEquals(match.state(PlayerId.P1), match.state(PlayerId.P2))
+
+        val mission = match.state(PlayerId.P1).missions.single()
+        assertEquals(listOf(PlayerId.P1, PlayerId.P2), mission.participants)
+        assertEquals(PlayerId.P1, mission.skirmish.activeOwner)
+
+        // Sıra P1'de: P2 komut veremez, state değişmez.
+        assertEquals(GameStep.Rejected("not your turn"), match.tacticalCommand(PlayerId.P2, SkirmishCommand.EndTurn))
+        assertEquals(match.state(PlayerId.P1), match.state(PlayerId.P2))
+
+        // Her iki koltuk sırayla oynar; her adımda iki state de aynı kalmalı (digest kontrolü içeride).
+        var guard = 0
+        while (match.state(PlayerId.P1).phase == Phase.TACTICAL && guard < 5_000) {
+            guard++
+            val active = match.state(PlayerId.P1).missions.first().skirmish.activeOwner
+            val options = Skirmish.legalCommands(match.state(PlayerId.P1).missions.first().skirmish)
+            val pick = options[guard % options.size]
+            val r = match.tacticalCommand(active, pick)
+            assertIs<GameStep.Ok>(r)
+            assertEquals(match.state(PlayerId.P1), match.state(PlayerId.P2))
+        }
+        assertEquals(Phase.PLANNING, match.state(PlayerId.P1).phase)
+        assertEquals(match.state(PlayerId.P1), match.state(PlayerId.P2))
     }
 }

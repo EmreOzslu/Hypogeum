@@ -6,9 +6,9 @@ Tur bazlı, co-op XCOM tarzı strateji oyunu. Tasarım: [`docs/DESIGN.md`](docs/
 
 | Modül | İçerik | Durum |
 |---|---|---|
-| `:domain` | Saf Kotlin. RNG, iki kampüs, ortak dünya, çözüm sırası, sevk, taktik kural motoru | M0–M3 |
+| `:domain` | Saf Kotlin. RNG, iki kampüs, ortak dünya, çözüm sırası, ortak görevler, taktik kural motoru | M0–M4 |
 | `:data` | Kayıt codec'i, kanonik JSON, state digest, lockstep senkron (LocalHotseatSync) | M0, M3 |
-| `:cli` | Terminal arayüzü: tek cihazda iki koltuk (hotseat) | M1–M3 |
+| `:cli` | Terminal arayüzü: tek cihazda iki koltuk (hotseat) | M1–M4 |
 
 Android/Compose arayüzü (`:app`) henüz yok; Android SDK bu ortamda kurulu değil.
 
@@ -26,7 +26,9 @@ Planlama: `build <slot> <reactor|foundry|hydro|barracks>`, `recruit <rifleman|he
 `dispatch <bölge> <asker-id>...`, `claim <düğüm>`, `draft`, `clear`, `status`, `commit`.
 `claim` aynı düğüme iki koltuk de uzanırsa, seed'li sırada önce gelen kazanır; kaybeden komut reddedilir ve ödeme yapmaz.
 
-Sevk edilen görevde taktik faz başlar; komutları yalnızca görevin sahibi verir (`move`, `shoot`, `end`, `status`).
+Aynı epoch'ta aynı bölgeye sevk eden iki koltuğun kadroları tek ortak görevde birleşir. Bir koltuk epoch başına tek kadro sevk eder.
+
+Taktik faz sırası: P1 → P2 (varsa) → uzaylılar. Komutları yalnızca o anki fazın sahibi verir (`move`, `shoot`, `end`, `status`).
 
 ## Test
 
