@@ -14,4 +14,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "Hypogeum"
 
-include(":domain", ":data")
+include(":domain", ":data", ":cli")
