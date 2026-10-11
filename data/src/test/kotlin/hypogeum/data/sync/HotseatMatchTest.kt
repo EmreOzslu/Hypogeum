@@ -104,4 +104,23 @@ class HotseatMatchTest {
         assertEquals(Phase.PLANNING, match.state(PlayerId.P1).phase)
         assertEquals(match.state(PlayerId.P1), match.state(PlayerId.P2))
     }
+
+    @Test
+    fun a_shipment_between_seats_arrives_identically_on_both() {
+        val match = HotseatMatch.start(GameEngine.newGame("m", 23))
+        match.commitPlanning(PlayerId.P1, listOf(StrategicCommand.Build(0, hypogeum.domain.campus.FacilityType.RELAY)))
+        match.commitPlanning(PlayerId.P2, emptyList())
+        match.commitPlanning(PlayerId.P1, emptyList())
+        match.commitPlanning(PlayerId.P2, emptyList())
+        val soldier = match.state(PlayerId.P1).campuses.p1.roster.first().id
+        match.commitPlanning(PlayerId.P1, listOf(StrategicCommand.SendShipment(hypogeum.domain.campus.Resources(alloy = 2), listOf(soldier))))
+        match.commitPlanning(PlayerId.P2, emptyList())
+        repeat(3) {
+            match.commitPlanning(PlayerId.P1, emptyList())
+            match.commitPlanning(PlayerId.P2, emptyList())
+            assertEquals(match.state(PlayerId.P1), match.state(PlayerId.P2))
+        }
+        assertTrue(match.state(PlayerId.P2).campuses.p2.roster.any { it.id == soldier })
+        assertTrue(match.state(PlayerId.P1).shipments.isEmpty())
+    }
 }

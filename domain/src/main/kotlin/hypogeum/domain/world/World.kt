@@ -28,11 +28,23 @@ data class WorldRegion(
 @Serializable
 data class Incursion(val regionId: String, val arrivalEpoch: Int)
 
-/** İki oyuncu için ortak dünya: bölgeler, tehdit seviyeleri ve bekleyen saldırılar. */
+/**
+ * İki kampüs arası hat. Her epoch en fazla capacityPerEpoch sevkiyat kabul eder (paylaşılan kapasite).
+ * usedThisEpoch çözüm sırasında artar, epoch sonunda sıfırlanır.
+ */
+@Serializable
+data class TransitLink(
+    val transitEpochs: Int,
+    val capacityPerEpoch: Int,
+    val usedThisEpoch: Int,
+)
+
+/** İki oyuncu için ortak dünya: bölgeler, tehdit seviyeleri, bekleyen saldırılar ve hat. */
 @Serializable
 data class World(
     val regions: List<WorldRegion>,
     val incursions: List<Incursion>,
+    val transit: TransitLink,
 ) {
     fun region(id: String): WorldRegion? = regions.firstOrNull { it.id == id }
 

@@ -52,7 +52,33 @@ object Content {
         FacilityType.FOUNDRY -> FacilitySpec(Resources(alloy = 1, cells = 1), buildEpochs = 2, output = Resources(alloy = 2))
         FacilityType.HYDROPONICS -> FacilitySpec(Resources(alloy = 1), buildEpochs = 1, output = Resources(biomass = 1))
         FacilityType.BARRACKS -> FacilitySpec(Resources(alloy = 2), buildEpochs = 2, output = Resources())
+        FacilityType.LAB -> FacilitySpec(Resources(alloy = 2, cells = 1), buildEpochs = 2, output = Resources())
+        FacilityType.RELAY -> FacilitySpec(Resources(alloy = 3), buildEpochs = 2, output = Resources())
+        FacilityType.INFIRMARY -> FacilitySpec(Resources(alloy = 2, biomass = 1), buildEpochs = 2, output = Resources())
     }
+
+    /** Teknoloji ağacı. Etkiler: BALLISTICS_AIM_BONUS ve REINFORCED_DAMAGE_BONUS sevk edilen askerlere eklenir. */
+    data class TechSpec(val id: String, val name: String, val cost: Resources, val epochs: Int)
+
+    val TECHS: List<TechSpec> = listOf(
+        TechSpec("ballistics", "Balistik", cost = Resources(alloy = 2, cells = 1), epochs = 2),
+        TechSpec("reinforced_hulls", "Takviyeli Zırh", cost = Resources(alloy = 3), epochs = 3),
+        TechSpec("field_medicine", "Saha Tıbbı", cost = Resources(biomass = 2), epochs = 2),
+    )
+
+    fun tech(id: String): TechSpec? = TECHS.firstOrNull { it.id == id }
+
+    const val BALLISTICS_AIM_BONUS = 1
+    const val REINFORCED_DAMAGE_BONUS = 1
+    const val BASE_HEAL_PER_EPOCH = 1
+    const val INFIRMARY_HEAL_BONUS = 1
+    const val FIELD_MEDICINE_HEAL_BONUS = 1
+
+    /** Hat parametreleri. */
+    const val TRANSIT_EPOCHS = 2
+    const val TRANSIT_CAPACITY = 2
+    /** Taşıma kaybı yüzdesi; kayıp yukarı yuvarlanır. */
+    const val TRANSIT_LOSS_PERCENT = 20
 
     data class ClassSpec(val maxHp: Int, val aim: Int, val damage: Int)
 

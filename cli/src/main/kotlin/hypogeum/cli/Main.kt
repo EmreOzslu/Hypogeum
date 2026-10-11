@@ -105,6 +105,20 @@ private fun planningLine(match: HotseatMatch, seat: PlayerId, line: String, draf
             if (parts.size < 3) println("Kullanım: dispatch <bölge> <asker-id>...   (bölgeler: ${Content.REGIONS.joinToString { it.id }})")
             else draft += StrategicCommand.Dispatch(parts[1], parts.drop(2))
         }
+        "research" -> {
+            if (parts.size != 2) println("Kullanım: research <${Content.TECHS.joinToString("|") { it.id }}>")
+            else draft += StrategicCommand.StartResearch(parts[1])
+        }
+        "ship" -> {
+            val a = parts.getOrNull(1)?.toIntOrNull()
+            val c = parts.getOrNull(2)?.toIntOrNull()
+            val b = parts.getOrNull(3)?.toIntOrNull()
+            if (a == null || c == null || b == null || parts.size < 4) {
+                println("Kullanım: ship <alloy> <cells> <biomass> [asker-id...]   (röle gerekir)")
+            } else {
+                draft += StrategicCommand.SendShipment(hypogeum.domain.campus.Resources(a, c, b), parts.drop(4))
+            }
+        }
         "claim" -> {
             if (parts.size != 2) println("Kullanım: claim <düğüm-id>   (düğümler: ${Content.REGIONS.flatMap { r -> r.nodes.map { it.id } }.joinToString()})")
             else draft += StrategicCommand.ClaimNode(parts[1])
@@ -155,6 +169,9 @@ private fun facilityOf(s: String): FacilityType? = when (s.lowercase()) {
     "foundry" -> FacilityType.FOUNDRY
     "hydro" -> FacilityType.HYDROPONICS
     "barracks" -> FacilityType.BARRACKS
+    "lab" -> FacilityType.LAB
+    "relay" -> FacilityType.RELAY
+    "infirmary" -> FacilityType.INFIRMARY
     else -> null
 }
 
@@ -191,6 +208,7 @@ fun renderWorld(s: GameState): String {
             sb.append("    düğüm ${n.id} [${n.kind} +${n.yieldPerEpoch}/epoch] — $owner\n")
         }
     }
+    sb.append("Hat: ${s.world.transit.usedThisEpoch}/${s.world.transit.capacityPerEpoch} sevkiyat kapasitesi kullanıldı, ${s.shipments.size} sevkiyat yolda\n")
     for (inc in s.world.incursions) {
         sb.append("  UYARI: ${inc.regionId} bölgesine epoch ${inc.arrivalEpoch}'de saldırı\n")
     }
@@ -199,7 +217,10 @@ fun renderWorld(s: GameState): String {
 
 fun renderCampus(s: GameState, seat: PlayerId): String {
     val c = s.campuses[seat]
-    val sb = StringBuilder("Kampüs $seat\n")
+    val sb = StringBuilder("Kampüs $seat${if (c.isolated) " [İZOLE: röle yok]" else ""}\n")
+    val active = c.research.active
+    sb.append("Araştırma: tamamlanan=${c.research.completed.ifEmpty { listOf("yok") }.joinToString()}" +
+        (if (active != null) ", devam eden=${active.tech} (${active.remainingEpochs} epoch)" else "") + "\n")
     sb.append("Stok: alloy=${c.stock.alloy} cells=${c.stock.cells} biomass=${c.stock.biomass}\n")
     sb.append("Izgara (${Content.GRID_COLS}x${Content.GRID_ROWS}, R/F/H/B = tesis, * = inşaat, . = boş):\n")
     for (row in 0 until Content.GRID_ROWS) {
@@ -211,6 +232,9 @@ fun renderCampus(s: GameState, seat: PlayerId): String {
                 FacilityType.FOUNDRY -> 'F'
                 FacilityType.HYDROPONICS -> 'H'
                 FacilityType.BARRACKS -> 'B'
+                FacilityType.LAB -> 'L'
+                FacilityType.RELAY -> 'T'
+                FacilityType.INFIRMARY -> 'I'
                 null -> if (c.queuedBuildAt(slot)) '*' else '.'
             }
             sb.append("%2d:%c ".format(slot, glyph))
@@ -263,6 +287,8 @@ fun describeCommand(c: StrategicCommand): String = when (c) {
     is StrategicCommand.Recruit -> "eğit: ${c.cls}"
     is StrategicCommand.Dispatch -> "sevk: ${c.regionId} <- ${c.soldierIds.joinToString()}"
     is StrategicCommand.ClaimNode -> "talep: ${c.nodeId}"
+    is StrategicCommand.StartResearch -> "araştır: ${c.tech}"
+    is StrategicCommand.SendShipment -> "sevk et: alloy ${c.resources.alloy} cells ${c.resources.cells} biomass ${c.resources.biomass} + ${c.soldierIds.joinToString()}"
 }
 
 fun describeOrder(o: ProductionOrder): String = when (o) {
@@ -285,6 +311,10 @@ fun describe(e: GameEvent): String = when (e) {
     is GameEvent.MissionEnded -> "[${e.owner}] ${if (e.won) "GÖREV BAŞARILI" else "GÖREV BAŞARISIZ"}"
     is GameEvent.IncursionWarning -> "UYARI: ${e.regionId} bölgesine epoch ${e.arrivalEpoch}'de saldırı"
     is GameEvent.IncursionArrived -> "SALDIRI: ${e.regionId} bölgesi işgal edildi, düğüm talepleri düştü"
+    is GameEvent.ShipmentSent -> "[${e.from}] sevkiyat yola çıktı -> ${e.to} (alloy ${e.delivered.alloy}, cells ${e.delivered.cells}, biomass ${e.delivered.biomass} + ${e.soldierCount} asker), epoch ${e.arrivalEpoch}'de varır"
+    is GameEvent.ShipmentArrived -> "[${e.to}] sevkiyat ulaştı (alloy ${e.delivered.alloy}, cells ${e.delivered.cells}, biomass ${e.delivered.biomass} + ${e.soldierCount} asker)"
+    is GameEvent.ResearchStarted -> "[${e.owner}] araştırma başladı: ${e.tech}"
+    is GameEvent.ResearchCompleted -> "[${e.owner}] araştırma tamamlandı: ${e.tech}"
     is GameEvent.MissionLaunched -> "GÖREV BAŞLADI: ${e.regionId} (${e.participants.joinToString(" + ")})"
     is GameEvent.EpochStarted -> "--- Epoch ${e.epoch} ---"
 }

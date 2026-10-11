@@ -19,14 +19,15 @@ import hypogeum.domain.tactics.SkirmishCommand
 import hypogeum.domain.tactics.SkirmishEvent
 import hypogeum.domain.tactics.SkirmishState
 import hypogeum.domain.tactics.StepResult
+import hypogeum.domain.world.TransitLink
 import hypogeum.domain.world.World
 import hypogeum.domain.world.WorldRegion
 import hypogeum.domain.world.ResourceNode
 import kotlinx.serialization.Serializable
 
 /** Denge/kural sürümü. Denge veya şema değişince artırılır. */
-const val ENGINE_VERSION = "0.4.0"
-const val SCHEMA_VERSION = 4
+const val ENGINE_VERSION = "0.5.0"
+const val SCHEMA_VERSION = 5
 
 @Serializable
 enum class Phase { PLANNING, TACTICAL }
@@ -47,6 +48,17 @@ data class Mission(
     val skirmish: SkirmishState,
 )
 
+/** Hat üzerindeki sevkiyat. delivered: taşıma kaybı düşüldükten sonra varan kaynak. */
+@Serializable
+data class Shipment(
+    val id: String,
+    val from: PlayerId,
+    val to: PlayerId,
+    val delivered: Resources,
+    val soldiers: List<Soldier>,
+    val arrivalEpoch: Int,
+)
+
 /** Planlama çözümü sırasında bekleyen sevk. Çözüm bitince görevlere dönüşür ve liste boşalır. */
 @Serializable
 data class PendingDispatch(val owner: PlayerId, val regionId: String, val soldierIds: List<String>)
@@ -65,6 +77,7 @@ data class GameState(
     val world: World,
     val missions: List<Mission>,
     val pendingDispatches: List<PendingDispatch>,
+    val shipments: List<Shipment>,
     /** Bu epoch'ta kazanılan bölgeler (tehdit düşürür). Epoch sonunda temizlenir. */
     val victories: List<String>,
 )
@@ -83,6 +96,10 @@ sealed interface GameEvent {
     data class SoldierKilled(val owner: PlayerId, val soldierId: String) : GameEvent
     data class SoldierInjured(val owner: PlayerId, val soldierId: String) : GameEvent
     data class MissionEnded(val owner: PlayerId, val won: Boolean) : GameEvent
+    data class ShipmentSent(val from: PlayerId, val to: PlayerId, val delivered: Resources, val soldierCount: Int, val arrivalEpoch: Int) : GameEvent
+    data class ShipmentArrived(val to: PlayerId, val delivered: Resources, val soldierCount: Int) : GameEvent
+    data class ResearchStarted(val owner: PlayerId, val tech: String) : GameEvent
+    data class ResearchCompleted(val owner: PlayerId, val tech: String) : GameEvent
     data class IncursionWarning(val regionId: String, val arrivalEpoch: Int) : GameEvent
     data class IncursionArrived(val regionId: String) : GameEvent
     data class EpochStarted(val epoch: Int) : GameEvent
@@ -109,6 +126,7 @@ object GameEngine {
                 )
             },
             incursions = emptyList(),
+            transit = TransitLink(Content.TRANSIT_EPOCHS, Content.TRANSIT_CAPACITY, usedThisEpoch = 0),
         )
         return GameState(
             schemaVersion = SCHEMA_VERSION,
@@ -123,6 +141,7 @@ object GameEngine {
             world = world,
             missions = emptyList(),
             pendingDispatches = emptyList(),
+            shipments = emptyList(),
             victories = emptyList(),
         )
     }
@@ -143,12 +162,12 @@ object GameEngine {
 
         for (actor in contestOrder) {
             for (cmd in batches[actor]) {
-                if (cmd is StrategicCommand.ClaimNode) s = applyOne(s, actor, cmd, events)
+                if (isShared(cmd)) s = applyOne(s, actor, cmd, events)
             }
         }
         for (actor in listOf(PlayerId.P1, PlayerId.P2)) {
             for (cmd in batches[actor]) {
-                if (cmd !is StrategicCommand.ClaimNode) s = applyOne(s, actor, cmd, events)
+                if (!isShared(cmd)) s = applyOne(s, actor, cmd, events)
             }
         }
 
@@ -177,6 +196,10 @@ object GameEngine {
             }
         }
     }
+
+    /** Paylaşılan aksiyonlar: düğüm talebi ve hat kapasitesi. Seed'li sırada çözülür. */
+    private fun isShared(cmd: StrategicCommand): Boolean =
+        cmd is StrategicCommand.ClaimNode || cmd is StrategicCommand.SendShipment
 
     private fun applyOne(s: GameState, actor: PlayerId, cmd: StrategicCommand, events: MutableList<GameEvent>): GameState =
         when (val r = Strategy.apply(s, actor, cmd)) {

@@ -154,8 +154,8 @@ class CampaignTest {
 
         val after = GameEngine.resolveEpoch(s0, PerPlayer(claim, claim)).let { (it as GameStep.Ok).state }
         val loser = claimed.owner.peer()
-        // Kazanan: -2 alloy ödedi, sonra düğüm verimi +1 aldı. Kaybeden: hiç ödemedi.
-        assertEquals(Content.START_STOCK.alloy - Content.CLAIM_COST.alloy + 1, after.campuses[claimed.owner].stock.alloy)
+        // Kazanan: -2 alloy ödedi. Röle yok, kampüs izole: düğüm verimi (1) yarıya iner, 0 olur. Kaybeden: hiç ödemedi.
+        assertEquals(Content.START_STOCK.alloy - Content.CLAIM_COST.alloy, after.campuses[claimed.owner].stock.alloy)
         assertEquals(Content.START_STOCK.alloy, after.campuses[loser].stock.alloy)
     }
 
@@ -245,6 +245,9 @@ class CampaignTest {
             for (c in SoldierClass.entries) add(StrategicCommand.Recruit(c))
             for (r in s.world.regions) add(StrategicCommand.Dispatch(r.id, listOf(s.campuses.p1.roster.firstOrNull()?.id ?: "none")))
             for (r in s.world.regions) for (n in r.nodes) add(StrategicCommand.ClaimNode(n.id))
+            for (t in Content.TECHS) add(StrategicCommand.StartResearch(t.id))
+            add(StrategicCommand.SendShipment(hypogeum.domain.campus.Resources(alloy = 1), emptyList()))
+            s.campuses.p1.roster.firstOrNull()?.let { add(StrategicCommand.SendShipment(hypogeum.domain.campus.Resources(), listOf(it.id))) }
         }
         return List(rnd.nextInt(0, 3)) { candidates[rnd.nextInt(candidates.size)] }
     }
@@ -260,5 +263,7 @@ class CampaignTest {
         }
         assertTrue((s.phase == Phase.TACTICAL) == s.missions.isNotEmpty())
         for (r in s.world.regions) assertTrue(r.threat in Content.MIN_THREAT..Content.MAX_THREAT)
+        assertTrue(s.world.transit.usedThisEpoch in 0..s.world.transit.capacityPerEpoch)
+        for (sh in s.shipments) assertTrue(sh.arrivalEpoch >= s.epoch, "shipment must not be overdue")
     }
 }

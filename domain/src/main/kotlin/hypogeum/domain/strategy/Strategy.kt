@@ -4,6 +4,7 @@ import hypogeum.domain.campus.Campus
 import hypogeum.domain.campus.Facility
 import hypogeum.domain.campus.FacilityType
 import hypogeum.domain.campus.ProductionOrder
+import hypogeum.domain.campus.ActiveResearch
 import hypogeum.domain.campus.Resources
 import hypogeum.domain.content.Content
 import hypogeum.domain.core.IdCounter
@@ -25,6 +26,7 @@ import hypogeum.domain.tactics.Combatant
 import hypogeum.domain.tactics.Side
 import hypogeum.domain.tactics.Skirmish
 import hypogeum.domain.world.Incursion
+import hypogeum.domain.game.Shipment
 import hypogeum.domain.world.ResourceKind
 import hypogeum.domain.world.World
 import hypogeum.domain.world.WorldRegion
@@ -36,6 +38,8 @@ internal object Strategy {
         is StrategicCommand.Recruit -> recruit(s, actor, cmd)
         is StrategicCommand.Dispatch -> dispatch(s, actor, cmd)
         is StrategicCommand.ClaimNode -> claim(s, actor, cmd)
+        is StrategicCommand.StartResearch -> research(s, actor, cmd)
+        is StrategicCommand.SendShipment -> shipment(s, actor, cmd)
     }
 
     private fun build(s: GameState, actor: PlayerId, cmd: StrategicCommand.Build): GameStep {
@@ -72,6 +76,60 @@ internal object Strategy {
         val claimed = region.copy(nodes = region.nodes.map { if (it.id == node.id) it.copy(claimedBy = actor) else it })
         val next = withCampus(s.copy(world = s.world.withRegion(claimed)), actor, c.copy(stock = c.stock - Content.CLAIM_COST))
         return GameStep.Ok(next, listOf(GameEvent.NodeClaimed(actor, node.id)))
+    }
+
+    private fun research(s: GameState, actor: PlayerId, cmd: StrategicCommand.StartResearch): GameStep {
+        val c = s.campuses[actor]
+        val spec = Content.tech(cmd.tech) ?: return GameStep.Rejected("unknown tech ${cmd.tech}")
+        if (cmd.tech in c.research.completed) return GameStep.Rejected("${spec.name} already researched")
+        if (c.research.active != null) return GameStep.Rejected("research already running")
+        if (!c.has(FacilityType.LAB)) return GameStep.Rejected("build a lab first")
+        if (!c.stock.covers(spec.cost)) return GameStep.Rejected("not enough resources for ${spec.name}")
+        val campus = c.copy(
+            stock = c.stock - spec.cost,
+            research = c.research.copy(active = ActiveResearch(cmd.tech, spec.epochs)),
+        )
+        return GameStep.Ok(withCampus(s, actor, campus), listOf(GameEvent.ResearchStarted(actor, cmd.tech)))
+    }
+
+    /**
+     * Sevkiyat: kaynak ve asker peer'in kampüsüne gider. Kaynağın Content.TRANSIT_LOSS_PERCENT'i yolda kaybolur.
+     * Gönderen stoktan ve kadrodan hemen düşer; varış transitEpochs sonra olur. Hat kapasitesi paylaşılır.
+     */
+    private fun shipment(s: GameState, actor: PlayerId, cmd: StrategicCommand.SendShipment): GameStep {
+        val c = s.campuses[actor]
+        if (s.world.transit.usedThisEpoch >= s.world.transit.capacityPerEpoch) return GameStep.Rejected("transit capacity full")
+        if (!c.has(FacilityType.RELAY)) return GameStep.Rejected("build a relay to ship")
+        if (cmd.resources.isZero() && cmd.soldierIds.isEmpty()) return GameStep.Rejected("empty shipment")
+        if (!cmd.resources.isNonNegative()) return GameStep.Rejected("negative amount")
+        if (cmd.soldierIds.size > Content.MAX_SQUAD) return GameStep.Rejected("at most ${Content.MAX_SQUAD} soldiers per shipment")
+        if (cmd.soldierIds.distinct().size != cmd.soldierIds.size) return GameStep.Rejected("duplicate soldier in shipment")
+        if (!c.stock.covers(cmd.resources)) return GameStep.Rejected("not enough resources to ship")
+        val soldiers = cmd.soldierIds.map { id -> c.soldier(id) ?: return GameStep.Rejected("no soldier $id") }
+        soldiers.firstOrNull { it.injuryEpochs > 0 }?.let { return GameStep.Rejected("${it.id} is injured") }
+        soldiers.firstOrNull { isBusy(s, it.id) }?.let { return GameStep.Rejected("${it.id} is already on a mission") }
+
+        val loss = cmd.resources.mapEach { (it * Content.TRANSIT_LOSS_PERCENT + 99) / 100 }
+        val delivered = cmd.resources - loss
+        val (shipId, ids) = s.ids.issue("shipment")
+        val shipment = Shipment(
+            id = shipId,
+            from = actor,
+            to = actor.peer(),
+            delivered = delivered,
+            soldiers = soldiers,
+            arrivalEpoch = s.epoch + s.world.transit.transitEpochs,
+        )
+        val sender = c.copy(
+            stock = c.stock - cmd.resources,
+            roster = c.roster.filterNot { it.id in cmd.soldierIds },
+        )
+        val next = withCampus(s, actor, sender).copy(
+            world = s.world.copy(transit = s.world.transit.copy(usedThisEpoch = s.world.transit.usedThisEpoch + 1)),
+            shipments = s.shipments + shipment,
+            ids = ids,
+        )
+        return GameStep.Ok(next, listOf(GameEvent.ShipmentSent(actor, shipment.to, delivered, soldiers.size, shipment.arrivalEpoch)))
     }
 
     private fun dispatch(s: GameState, actor: PlayerId, cmd: StrategicCommand.Dispatch): GameStep {
@@ -114,13 +172,14 @@ internal object Strategy {
                 for ((i, soldierId) in d.soldierIds.withIndex()) {
                     n++
                     val sol = requireNotNull(c.soldier(soldierId))
+                    val done = c.research.completed
                     combatants += Skirmish.squadmate(
                         id = "p$n",
                         owner = d.owner,
                         pos = Skirmish.DEPLOY_SQUAD[d.owner][i],
                         hp = sol.hp,
-                        aim = sol.stats.aim,
-                        damage = sol.stats.damage,
+                        aim = sol.stats.aim + if ("ballistics" in done) Content.BALLISTICS_AIM_BONUS else 0,
+                        damage = sol.stats.damage + if ("reinforced_hulls" in done) Content.REINFORCED_DAMAGE_BONUS else 0,
                     )
                     links += SquadLink(d.owner, "p$n", soldierId)
                 }
@@ -140,16 +199,28 @@ internal object Strategy {
         return s.copy(rng = rng, missions = missions, pendingDispatches = emptyList())
     }
 
-    /** Epoch sonu: üretim ve düğüm verimi, kuyruk ilerlemesi, dünya tiki, yaralı iyileşmesi. */
+    /**
+     * Epoch sonu: varan sevkiyatlar, üretim ve düğüm verimi, kuyruk, araştırma, iyileşme, dünya tiki.
+     * Sonra kapasite sayacı sıfırlanır ve sıradaki epoch başlar.
+     */
     fun endEpoch(s: GameState): GameStep.Ok {
         val events = mutableListOf<GameEvent>()
+        var campuses = s.campuses
         var rng: RngState = s.rng
         var ids: IdCounter = s.ids
 
-        val p1 = upkeep(s.campuses.p1, PlayerId.P1, s.world, rng, ids, events)
+        val arriving = s.shipments.filter { it.arrivalEpoch == s.epoch }
+        for (sh in arriving) {
+            val c = campuses[sh.to]
+            campuses = campuses.with(sh.to, c.copy(stock = c.stock + sh.delivered, roster = c.roster + sh.soldiers))
+            events += GameEvent.ShipmentArrived(sh.to, sh.delivered, sh.soldiers.size)
+        }
+        val shipments = s.shipments.filterNot { it.arrivalEpoch == s.epoch }
+
+        val p1 = upkeep(campuses.p1, PlayerId.P1, s.world, rng, ids, events)
         rng = p1.rng
         ids = p1.ids
-        val p2 = upkeep(s.campuses.p2, PlayerId.P2, s.world, rng, ids, events)
+        val p2 = upkeep(campuses.p2, PlayerId.P2, s.world, rng, ids, events)
         rng = p2.rng
         ids = p2.ids
 
@@ -158,9 +229,10 @@ internal object Strategy {
             epoch = s.epoch + 1,
             phase = Phase.PLANNING,
             campuses = PerPlayer(p1.campus, p2.campus),
-            world = world,
+            world = world.copy(transit = world.transit.copy(usedThisEpoch = 0)),
             rng = rng,
             ids = ids,
+            shipments = shipments,
             victories = emptyList(),
         )
         events += GameEvent.EpochStarted(next.epoch)
@@ -177,13 +249,14 @@ internal object Strategy {
         for (f in c.grid) if (f != null) gain += Content.facility(f.type).output
         for (region in world.regions) for (node in region.nodes) {
             if (node.claimedBy != owner) continue
+            val amount = if (c.isolated) node.yieldPerEpoch / 2 else node.yieldPerEpoch
             gain += when (node.kind) {
-                ResourceKind.ALLOY -> Resources(alloy = node.yieldPerEpoch)
-                ResourceKind.CELLS -> Resources(cells = node.yieldPerEpoch)
-                ResourceKind.BIOMASS -> Resources(biomass = node.yieldPerEpoch)
+                ResourceKind.ALLOY -> Resources(alloy = amount)
+                ResourceKind.CELLS -> Resources(cells = amount)
+                ResourceKind.BIOMASS -> Resources(biomass = amount)
             }
         }
-        var stock = c.stock + gain
+        val stock = c.stock + gain
         if (gain != Resources()) events += GameEvent.ResourcesProduced(owner, gain)
 
         val grid = c.grid.toMutableList()
@@ -213,14 +286,28 @@ internal object Strategy {
             }
         }
 
+        var research = c.research
+        research.active?.let { active ->
+            val left = active.remainingEpochs - 1
+            research = if (left > 0) {
+                research.copy(active = active.copy(remainingEpochs = left))
+            } else {
+                events += GameEvent.ResearchCompleted(owner, active.tech)
+                research.copy(completed = research.completed + active.tech, active = null)
+            }
+        }
+
+        val heal = Content.BASE_HEAL_PER_EPOCH +
+            (if (c.has(FacilityType.INFIRMARY)) Content.INFIRMARY_HEAL_BONUS else 0) +
+            (if ("field_medicine" in research.completed) Content.FIELD_MEDICINE_HEAL_BONUS else 0)
         for (i in roster.indices) {
             val sol = roster[i]
             if (sol.injuryEpochs > 0) {
-                val left = sol.injuryEpochs - 1
+                val left = maxOf(0, sol.injuryEpochs - heal)
                 roster[i] = sol.copy(injuryEpochs = left, hp = if (left == 0) sol.stats.maxHp else sol.hp)
             }
         }
-        return Upkept(c.copy(stock = stock, grid = grid, queue = queue, roster = roster), rng, ids)
+        return Upkept(c.copy(stock = stock, grid = grid, queue = queue, roster = roster, research = research), rng, ids)
     }
 
     /**
