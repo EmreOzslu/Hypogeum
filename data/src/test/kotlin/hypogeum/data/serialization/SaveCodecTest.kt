@@ -1,7 +1,9 @@
 package hypogeum.data.serialization
 
 import hypogeum.domain.game.GameEngine
+import hypogeum.domain.game.ENGINE_VERSION
 import hypogeum.domain.game.GameState
+import hypogeum.domain.game.SCHEMA_VERSION
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -30,13 +32,13 @@ class SaveCodecTest {
 
     @Test
     fun rejects_unknown_schema_version() {
-        val text = SaveCodec.encode(sample).replace("\"schemaVersion\":1", "\"schemaVersion\":99")
+        val text = SaveCodec.encode(sample).replace("\"schemaVersion\":$SCHEMA_VERSION", "\"schemaVersion\":99")
         assertFailsWith<IncompatibleSaveException> { SaveCodec.decode(text) }
     }
 
     @Test
     fun rejects_unknown_engine_version() {
-        val text = SaveCodec.encode(sample).replace("\"engineVersion\":\"0.1.0\"", "\"engineVersion\":\"9.9.9\"")
+        val text = SaveCodec.encode(sample).replace("\"engineVersion\":\"$ENGINE_VERSION\"", "\"engineVersion\":\"9.9.9\"")
         assertFailsWith<IncompatibleSaveException> { SaveCodec.decode(text) }
     }
 }

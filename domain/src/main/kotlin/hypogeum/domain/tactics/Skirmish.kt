@@ -88,25 +88,35 @@ object Skirmish {
         "........",
     )
 
-    fun newGame(seed: Long): SkirmishState {
-        val combatants = listOf(
-            Combatant("p1", Side.PLAYER, Pos(0, 7), hp = 4, aim = 70, damage = 2, range = 6, ap = PLAYER_AP),
-            Combatant("p2", Side.PLAYER, Pos(1, 6), hp = 4, aim = 70, damage = 2, range = 6, ap = PLAYER_AP),
-            Combatant("p3", Side.PLAYER, Pos(2, 7), hp = 4, aim = 70, damage = 2, range = 6, ap = PLAYER_AP),
-            Combatant("a1", Side.ALIEN, Pos(7, 0), hp = 3, aim = 60, damage = 1, range = 4, ap = 0),
-            Combatant("a2", Side.ALIEN, Pos(5, 0), hp = 3, aim = 60, damage = 1, range = 4, ap = 0),
-            Combatant("a3", Side.ALIEN, Pos(7, 2), hp = 3, aim = 60, damage = 1, range = 4, ap = 0),
-        )
-        return SkirmishState(
-            seed = seed,
-            rng = RngState(seed),
-            map = TacticalMap.parse(MAP_ROWS),
-            combatants = combatants,
-            round = 1,
-            active = Side.PLAYER,
-            winner = null,
-        )
-    }
+    val DEPLOY_PLAYER: List<Pos> = listOf(Pos(0, 7), Pos(1, 6), Pos(2, 7))
+    val DEPLOY_ALIEN: List<Pos> = listOf(Pos(7, 0), Pos(5, 0), Pos(7, 2))
+
+    fun defaultMap(): TacticalMap = TacticalMap.parse(MAP_ROWS)
+
+    fun squadmate(id: String, pos: Pos, hp: Int, aim: Int, damage: Int): Combatant =
+        Combatant(id, Side.PLAYER, pos, hp = hp, aim = aim, damage = damage, range = 6, ap = PLAYER_AP)
+
+    fun alien(id: String, pos: Pos): Combatant =
+        Combatant(id, Side.ALIEN, pos, hp = 3, aim = 60, damage = 1, range = 4, ap = 0)
+
+    /** Hazır sahne: rng durumu seed'den, birimler verilen listeden. */
+    fun start(seed: Long, map: TacticalMap, combatants: List<Combatant>): SkirmishState = SkirmishState(
+        seed = seed,
+        rng = RngState(seed),
+        map = map,
+        combatants = combatants,
+        round = 1,
+        active = Side.PLAYER,
+        winner = null,
+    )
+
+    /** M1 varsayılan skirmish'i: üç asker, üç uzaylı. */
+    fun newGame(seed: Long): SkirmishState = start(
+        seed,
+        defaultMap(),
+        DEPLOY_PLAYER.mapIndexed { i, p -> squadmate("p${i + 1}", p, hp = 4, aim = 70, damage = 2) } +
+            DEPLOY_ALIEN.mapIndexed { i, p -> alien("a${i + 1}", p) },
+    )
 
     fun apply(state: SkirmishState, cmd: SkirmishCommand): StepResult {
         if (state.winner != null) return StepResult.Rejected("game is over")
