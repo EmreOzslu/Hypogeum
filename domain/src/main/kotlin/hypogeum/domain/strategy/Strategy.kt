@@ -17,6 +17,7 @@ import hypogeum.domain.game.GameEvent
 import hypogeum.domain.game.GameState
 import hypogeum.domain.game.GameStep
 import hypogeum.domain.game.Mission
+import hypogeum.domain.game.MissionKind
 import hypogeum.domain.game.PendingDispatch
 import hypogeum.domain.game.Phase
 import hypogeum.domain.game.SquadLink
@@ -152,13 +153,24 @@ internal object Strategy {
 
     /**
      * Çözüm sonu: bekleyen sevkleri bölgeye göre gruplar. Aynı bölgeye giden squad'lar tek ortak görev olur.
-     * Görev sırası, bölgelerin ilk sevk sırasıdır.
+     * Görev sırası, bölgelerin ilk sevk sırasıdır. Görevler mevcut listenin sonuna eklenir.
      */
     fun launchMissions(s: GameState): GameState {
-        var rng: RngState = s.rng
-        val regionOrder = s.pendingDispatches.map { it.regionId }.distinct()
+        val (missions, rng) = buildMissions(s, s.pendingDispatches, MissionKind.ASSAULT, s.rng)
+        return s.copy(rng = rng, missions = s.missions + missions, pendingDispatches = emptyList())
+    }
+
+    /** Sevk listesinden bölge başına bir görev kurar. Squad'lar aynı kuralla konuşlanır. */
+    private fun buildMissions(
+        s: GameState,
+        dispatches: List<PendingDispatch>,
+        kind: MissionKind,
+        rng0: RngState,
+    ): Pair<List<Mission>, RngState> {
+        var rng = rng0
+        val regionOrder = dispatches.map { it.regionId }.distinct()
         val missions = regionOrder.map { regionId ->
-            val group = s.pendingDispatches.filter { it.regionId == regionId }.sortedBy { it.owner.ordinal }
+            val group = dispatches.filter { it.regionId == regionId }.sortedBy { it.owner.ordinal }
             val region = requireNotNull(s.world.region(regionId))
             val spec = requireNotNull(Content.regionSpec(regionId))
             val (seed, next) = Rng.nextLong(rng)
@@ -169,10 +181,10 @@ internal object Strategy {
             var n = 0
             for (d in group) {
                 val c = s.campuses[d.owner]
+                val done = c.research.completed
                 for ((i, soldierId) in d.soldierIds.withIndex()) {
                     n++
                     val sol = requireNotNull(c.soldier(soldierId))
-                    val done = c.research.completed
                     combatants += Skirmish.squadmate(
                         id = "p$n",
                         owner = d.owner,
@@ -189,6 +201,7 @@ internal object Strategy {
                 Skirmish.alien("a${i + 1}", Skirmish.DEPLOY_ALIEN[i])
             }
             Mission(
+                kind = kind,
                 participants = participants,
                 regionId = regionId,
                 squads = links,
@@ -196,7 +209,74 @@ internal object Strategy {
                 skirmish = Skirmish.start(seed, Skirmish.defaultMap(), combatants + aliens),
             )
         }
-        return s.copy(rng = rng, missions = missions, pendingDispatches = emptyList())
+        return missions to rng
+    }
+
+    /**
+     * Saldırı iner (arrivalEpoch == epoch). Sahipli bir bölgede her sahibin hazır askerleri savunma görevi kurar.
+     * Sahipsiz bölgede yalnızca tehdit sıfırlanır. Hazır asker yoksa savunma kendiliğinden kaybedilir.
+     */
+    fun landIncursions(s: GameState, events: MutableList<GameEvent>): GameState {
+        val arriving = s.world.incursions.filter { it.arrivalEpoch == s.epoch }
+        if (arriving.isEmpty()) return s
+        var st = s.copy(world = s.world.copy(incursions = s.world.incursions.filterNot { it.arrivalEpoch == s.epoch }))
+        for (inc in arriving) {
+            val r = st.world.region(inc.regionId) ?: continue
+            events += GameEvent.IncursionArrived(r.id)
+            val owners = r.nodes.mapNotNull { it.claimedBy }.distinct().sortedBy { it.ordinal }
+            if (owners.isEmpty()) {
+                st = st.copy(world = st.world.withRegion(r.copy(threat = Content.MIN_THREAT)))
+                continue
+            }
+            val squads = owners.mapNotNull { owner ->
+                readyDefenders(st, owner)?.let { PendingDispatch(owner, r.id, it) }
+            }
+            if (squads.isEmpty()) {
+                st = loseRegion(st, r.id, owners, events)
+                continue
+            }
+            val (missions, rng) = buildMissions(st, squads, MissionKind.DEFENSE, st.rng)
+            st = st.copy(rng = rng, missions = st.missions + missions)
+        }
+        return st
+    }
+
+    /** Savunmaya girebilecek asker kimlikleri (en fazla bir kadro). Yoksa null. */
+    private fun readyDefenders(s: GameState, owner: PlayerId): List<String>? {
+        val ids = s.campuses[owner].roster
+            .filter { it.injuryEpochs == 0 && it.hp > 0 && !isBusy(s, it.id) }
+            .take(Content.MAX_SQUAD)
+            .map { it.id }
+        return ids.ifEmpty { null }
+    }
+
+    /** Savunma kaybedildi: bölgenin tüm sahiplikleri düşer, tehdit sıfırlanır, her kampüsten bir tesis yıkılır. */
+    private fun loseRegion(s: GameState, regionId: String, owners: List<PlayerId>, events: MutableList<GameEvent>): GameState {
+        val r = requireNotNull(s.world.region(regionId))
+        var st = s.copy(
+            world = s.world.withRegion(
+                r.copy(threat = Content.MIN_THREAT, nodes = r.nodes.map { it.copy(claimedBy = null) }),
+            ),
+        )
+        for (owner in owners) {
+            events += GameEvent.DefenseFailed(owner, regionId)
+            val (campus, rng) = damage(st.campuses[owner], owner, st.rng, events)
+            st = st.copy(campuses = st.campuses.with(owner, campus), rng = rng)
+        }
+        return st
+    }
+
+    /** Rastgele bir tesisi yıkar. Tesis yoksa değişmez. */
+    private fun damage(c: Campus, owner: PlayerId, rng0: RngState, events: MutableList<GameEvent>): Pair<Campus, RngState> {
+        val built = c.grid.indices.filter { c.grid[it] != null }
+        if (built.isEmpty()) return c to rng0
+        val draw = Rng.nextInt(rng0, built.size)
+        val slot = built[draw.value]
+        val type = requireNotNull(c.grid[slot]).type
+        events += GameEvent.FacilityDestroyed(owner, slot, type)
+        val grid = c.grid.toMutableList()
+        grid[slot] = null
+        return c.copy(grid = grid) to draw.next
     }
 
     /**
@@ -316,13 +396,6 @@ internal object Strategy {
      */
     private fun tickWorld(world: World, epoch: Int, victories: List<String>, events: MutableList<GameEvent>): World {
         var w = world
-        val arriving = w.incursions.filter { it.arrivalEpoch == epoch }
-        for (inc in arriving) {
-            val r = w.region(inc.regionId) ?: continue
-            w = w.withRegion(r.copy(threat = Content.MIN_THREAT, nodes = r.nodes.map { it.copy(claimedBy = null) }))
-            events += GameEvent.IncursionArrived(inc.regionId)
-        }
-        w = w.copy(incursions = w.incursions.filter { it.arrivalEpoch != epoch })
 
         for (r in w.regions) {
             val threat = if (r.id in victories) {
@@ -383,11 +456,14 @@ internal object Strategy {
         }
 
         val rest = s.missions.drop(1)
-        val updated = s.copy(
+        var updated = s.copy(
             campuses = campuses,
             missions = rest,
             victories = if (won) s.victories + m.regionId else s.victories,
         )
+        if (m.kind == MissionKind.DEFENSE && !won) {
+            updated = loseRegion(updated, m.regionId, m.participants, events)
+        }
         if (rest.isNotEmpty()) return GameStep.Ok(updated, events)
         val ended = endEpoch(updated.copy(phase = Phase.PLANNING))
         return GameStep.Ok(ended.state, events + ended.events)

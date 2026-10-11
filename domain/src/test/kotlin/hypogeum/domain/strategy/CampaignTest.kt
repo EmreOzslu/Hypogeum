@@ -10,6 +10,7 @@ import hypogeum.domain.game.GameEngine
 import hypogeum.domain.game.GameEvent
 import hypogeum.domain.game.GameState
 import hypogeum.domain.game.GameStep
+import hypogeum.domain.game.MissionKind
 import hypogeum.domain.game.Phase
 import hypogeum.domain.roster.SoldierClass
 import hypogeum.domain.tactics.Skirmish
@@ -171,25 +172,47 @@ class CampaignTest {
     }
 
     @Test
-    fun threat_builds_to_a_warning_and_the_arrival_takes_the_claims_back() {
-        // dock tehdidi 1'den başlar, her epoch sonunda +1. Epoch 2 sonunda 3'e (MAX) ulaşır
-        // ve epoch 3 için uyarı üretir. Epoch 3 sonunda saldırı gelir: düğümler sahipsizleşir.
+    fun threat_builds_to_a_warning_then_a_defense_decides_the_claim() {
+        // dock tehdidi 1'den başlar, her epoch sonunda +1. Epoch 2 sonunda 3'e (MAX) ulaşır ve epoch 3 için uyarı verir.
         var s = resolve(GameEngine.newGame("m", 5), p1 = listOf(StrategicCommand.ClaimNode("dock-alloy")))
         assertEquals(PlayerId.P1, s.world.findNode("dock-alloy")!!.second.claimedBy)
         assertEquals(2, s.world.region("dock")!!.threat)
-
-        val endOfEpoch2 = events(s)
-        assertEquals(listOf(GameEvent.IncursionWarning("dock", 3)), endOfEpoch2.filterIsInstance<GameEvent.IncursionWarning>())
+        assertEquals(listOf(GameEvent.IncursionWarning("dock", 3)), events(s).filterIsInstance<GameEvent.IncursionWarning>())
         s = resolve(s)
         assertTrue(s.world.incursions.any { it.regionId == "dock" && it.arrivalEpoch == 3 })
 
-        val endOfEpoch3 = events(s)
-        assertEquals(listOf(GameEvent.IncursionArrived("dock")), endOfEpoch3.filterIsInstance<GameEvent.IncursionArrived>())
-        s = resolve(s)
-        assertEquals(null, s.world.findNode("dock-alloy")!!.second.claimedBy)
-        // Saldırı tehdidi 1'e indirir; aynı epoch'un büyüme tiki +1 ekler.
-        assertEquals(Content.MIN_THREAT + 1, s.world.region("dock")!!.threat)
-        assertTrue(s.world.incursions.none { it.regionId == "dock" })
+        // Saldırı epoch 3 çözümünde iner: sahip savunma görevine girer; sonuç bitene kadar sahiplik sürer.
+        val landing = resolve(s)
+        assertEquals(Phase.TACTICAL, landing.phase)
+        assertEquals(MissionKind.DEFENSE, landing.missions.single().kind)
+        assertEquals(PlayerId.P1, landing.world.findNode("dock-alloy")!!.second.claimedBy)
+
+        val (after, lostEvents) = playOutMissions(landing)
+        assertEquals(Phase.PLANNING, after.phase)
+        val lost = lostEvents.any { it is GameEvent.DefenseFailed }
+        if (lost) {
+            assertEquals(null, after.world.findNode("dock-alloy")!!.second.claimedBy)
+        } else {
+            assertEquals(PlayerId.P1, after.world.findNode("dock-alloy")!!.second.claimedBy)
+        }
+        assertTrue(after.world.incursions.none { it.regionId == "dock" })
+    }
+
+    /** Aktif görevleri rastgele ama geçerli hamlelerle bitirir. Olayları toplar. */
+    private fun playOutMissions(start: GameState): Pair<GameState, List<GameEvent>> {
+        val chooser = Random(99)
+        var s = start
+        val events = mutableListOf<GameEvent>()
+        var guard = 0
+        while (s.phase == Phase.TACTICAL && guard++ < 5_000) {
+            val m = s.missions.first()
+            val options = Skirmish.legalCommands(m.skirmish)
+            val r = GameEngine.tacticalCommand(s, m.skirmish.activeOwner, options[chooser.nextInt(options.size)])
+            val ok = assertIs<GameStep.Ok>(r)
+            s = ok.state
+            events += ok.events
+        }
+        return s to events
     }
 
     @Test

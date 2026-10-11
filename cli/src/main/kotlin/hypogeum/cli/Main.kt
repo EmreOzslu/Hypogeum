@@ -11,6 +11,7 @@ import hypogeum.domain.game.GameEngine
 import hypogeum.domain.game.GameEvent
 import hypogeum.domain.game.GameState
 import hypogeum.domain.game.GameStep
+import hypogeum.domain.game.MissionKind
 import hypogeum.domain.game.Phase
 import hypogeum.domain.roster.SoldierClass
 import hypogeum.domain.strategy.StrategicCommand
@@ -310,12 +311,14 @@ fun describe(e: GameEvent): String = when (e) {
     is GameEvent.SoldierInjured -> "[${e.owner}] ${e.soldierId} yaralandı"
     is GameEvent.MissionEnded -> "[${e.owner}] ${if (e.won) "GÖREV BAŞARILI" else "GÖREV BAŞARISIZ"}"
     is GameEvent.IncursionWarning -> "UYARI: ${e.regionId} bölgesine epoch ${e.arrivalEpoch}'de saldırı"
-    is GameEvent.IncursionArrived -> "SALDIRI: ${e.regionId} bölgesi işgal edildi, düğüm talepleri düştü"
+    is GameEvent.IncursionArrived -> "SALDIRI: ${e.regionId} bölgesine saldırı indi"
     is GameEvent.ShipmentSent -> "[${e.from}] sevkiyat yola çıktı -> ${e.to} (alloy ${e.delivered.alloy}, cells ${e.delivered.cells}, biomass ${e.delivered.biomass} + ${e.soldierCount} asker), epoch ${e.arrivalEpoch}'de varır"
     is GameEvent.ShipmentArrived -> "[${e.to}] sevkiyat ulaştı (alloy ${e.delivered.alloy}, cells ${e.delivered.cells}, biomass ${e.delivered.biomass} + ${e.soldierCount} asker)"
     is GameEvent.ResearchStarted -> "[${e.owner}] araştırma başladı: ${e.tech}"
     is GameEvent.ResearchCompleted -> "[${e.owner}] araştırma tamamlandı: ${e.tech}"
-    is GameEvent.MissionLaunched -> "GÖREV BAŞLADI: ${e.regionId} (${e.participants.joinToString(" + ")})"
+    is GameEvent.MissionLaunched -> "${if (e.kind == MissionKind.DEFENSE) "SAVUNMA" else "GÖREV"} BAŞLADI: ${e.regionId} (${e.participants.joinToString(" + ")})"
+    is GameEvent.DefenseFailed -> "[${e.owner}] savunma kaybedildi: ${e.regionId} — düğüm talepleri düştü"
+    is GameEvent.FacilityDestroyed -> "[${e.owner}] tesis yıkıldı: slot ${e.slot} (${e.type})"
     is GameEvent.EpochStarted -> "--- Epoch ${e.epoch} ---"
 }
 

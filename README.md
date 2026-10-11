@@ -33,6 +33,11 @@ düğüm verimi yarıya iner. Infirmary yaralıların iyileşmesini hızlandır�
 
 Aynı epoch'ta aynı bölgeye sevk eden iki koltuğun kadroları tek ortak görevde birleşir. Bir koltuk epoch başına tek kadro sevk eder.
 
+Savunma: bir bölgeye uyarı verildikten sonra (tehdit en yükseğe ulaştığında) saldırı bir sonraki epoch'un çözümünde iner.
+Bölgenin sahiplerinin hazır askerleri (yaralı olmayan, başka görevde olmayan) savunma görevi oluşturur. Savunmayı kazanırsan
+sahiplik korunur ve tehdit düşer; kaybedersen sahiplik düşer ve her kampüsten rastgele bir tesis yıkılır.
+Sahipsiz bölgeye saldırı ise yalnızca tehdidi sıfırlar.
+
 Taktik faz sırası: P1 → P2 (varsa) → uzaylılar. Komutları yalnızca o anki fazın sahibi verir (`move`, `shoot`, `end`, `status`).
 
 ## Test

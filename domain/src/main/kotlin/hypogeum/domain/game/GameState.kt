@@ -26,8 +26,8 @@ import hypogeum.domain.world.ResourceNode
 import kotlinx.serialization.Serializable
 
 /** Denge/kural sürümü. Denge veya şema değişince artırılır. */
-const val ENGINE_VERSION = "0.5.0"
-const val SCHEMA_VERSION = 5
+const val ENGINE_VERSION = "0.6.0"
+const val SCHEMA_VERSION = 6
 
 @Serializable
 enum class Phase { PLANNING, TACTICAL }
@@ -40,7 +40,11 @@ data class SquadLink(val owner: PlayerId, val combatantId: String, val soldierId
  * rewardAlloy her kazanan katılımcıya ayrı ayrı ödenir. missions listesinde ilk eleman aktif olandır.
  */
 @Serializable
+enum class MissionKind { ASSAULT, DEFENSE }
+
+@Serializable
 data class Mission(
+    val kind: MissionKind,
     val participants: List<PlayerId>,
     val regionId: String,
     val squads: List<SquadLink>,
@@ -91,7 +95,9 @@ sealed interface GameEvent {
     data class SoldierRecruited(val owner: PlayerId, val soldierId: String, val name: String) : GameEvent
     data class ResourcesProduced(val owner: PlayerId, val amount: Resources) : GameEvent
     data class SquadDispatched(val owner: PlayerId, val regionId: String, val size: Int) : GameEvent
-    data class MissionLaunched(val regionId: String, val participants: List<PlayerId>) : GameEvent
+    data class MissionLaunched(val regionId: String, val participants: List<PlayerId>, val kind: MissionKind) : GameEvent
+    data class DefenseFailed(val owner: PlayerId, val regionId: String) : GameEvent
+    data class FacilityDestroyed(val owner: PlayerId, val slot: Int, val type: FacilityType) : GameEvent
     data class Tactical(val owner: PlayerId, val event: SkirmishEvent) : GameEvent
     data class SoldierKilled(val owner: PlayerId, val soldierId: String) : GameEvent
     data class SoldierInjured(val owner: PlayerId, val soldierId: String) : GameEvent
@@ -158,6 +164,7 @@ object GameEngine {
         val (flip, rng) = Rng.nextBoolean(state.rng)
         var s = state.copy(rng = rng)
         val events = mutableListOf<GameEvent>()
+        s = Strategy.landIncursions(s, events)
         val contestOrder = if (flip) listOf(PlayerId.P1, PlayerId.P2) else listOf(PlayerId.P2, PlayerId.P1)
 
         for (actor in contestOrder) {
@@ -171,10 +178,10 @@ object GameEngine {
             }
         }
 
-        if (s.pendingDispatches.isNotEmpty()) {
-            val launched = Strategy.launchMissions(s)
-            launched.missions.forEach { events += GameEvent.MissionLaunched(it.regionId, it.participants) }
-            return GameStep.Ok(launched.copy(phase = Phase.TACTICAL), events)
+        if (s.pendingDispatches.isNotEmpty()) s = Strategy.launchMissions(s)
+        if (s.missions.isNotEmpty()) {
+            s.missions.forEach { events += GameEvent.MissionLaunched(it.regionId, it.participants, it.kind) }
+            return GameStep.Ok(s.copy(phase = Phase.TACTICAL), events)
         }
         val ended = Strategy.endEpoch(s)
         return GameStep.Ok(ended.state, events + ended.events)

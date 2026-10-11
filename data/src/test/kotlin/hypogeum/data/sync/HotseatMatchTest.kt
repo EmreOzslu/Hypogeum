@@ -16,6 +16,19 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
+/** Taktik fazı bitirir (görev varsa). Kayıplı hatta iki koltuk farklıysa yeniden senkronlar. */
+private fun finishTactics(match: HotseatMatch) {
+    var guard = 0
+    while (match.state(PlayerId.P1).phase == Phase.TACTICAL && guard++ < 5_000) {
+        val owner = match.state(PlayerId.P1).missions.first().skirmish.activeOwner
+        val options = Skirmish.legalCommands(match.state(PlayerId.P1).missions.first().skirmish)
+        match.tacticalCommand(owner, options.last())
+        if (match.state(PlayerId.P1) != match.state(PlayerId.P2)) match.resync()
+    }
+    var tries = 0
+    while (match.state(PlayerId.P1) != match.state(PlayerId.P2) && tries++ < 200) match.resync()
+}
+
 class HotseatMatchTest {
     @Test
     fun both_seats_resolve_the_epoch_to_the_same_state() {
@@ -60,13 +73,9 @@ class HotseatMatchTest {
     fun long_hotseat_session_never_desyncs() {
         val match = HotseatMatch.start(GameEngine.newGame("m", 13))
         repeat(8) { epoch ->
+            finishTactics(match)
             val p1 = if (epoch % 2 == 0) listOf(StrategicCommand.ClaimNode("gate-cells")) else emptyList()
             match.commitPlanning(PlayerId.P1, p1)
-            while (match.state(PlayerId.P1).phase == Phase.TACTICAL) {
-                val owner = match.state(PlayerId.P1).missions.first().skirmish.activeOwner
-                val options = Skirmish.legalCommands(match.state(PlayerId.P1).missions.first().skirmish)
-                match.tacticalCommand(owner, options.last())
-            }
             match.commitPlanning(PlayerId.P2, emptyList())
             assertEquals(match.state(PlayerId.P1), match.state(PlayerId.P2))
         }
@@ -133,6 +142,7 @@ class LossyHotseatTest {
         val bus = UnreliableBus<WireMessage>(seed = 42, dropPercent = 25, dupPercent = 25)
         val match = HotseatMatch.withBus(GameEngine.newGame("m", 31), bus)
         repeat(3) {
+            finishTactics(match)
             match.commitPlanning(PlayerId.P1, listOf(StrategicCommand.ClaimNode("gate-bio")))
             match.commitPlanning(PlayerId.P2, emptyList())
             var guard = 0
@@ -141,6 +151,7 @@ class LossyHotseatTest {
             }
             assertEquals(match.state(PlayerId.P1), match.state(PlayerId.P2))
         }
+        finishTactics(match)
         assertEquals(4, match.state(PlayerId.P1).epoch)
         assertTrue(bus.dropped > 0)
     }
