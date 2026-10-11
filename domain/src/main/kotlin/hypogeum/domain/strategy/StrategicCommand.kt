@@ -4,10 +4,14 @@ import hypogeum.domain.campus.FacilityType
 import hypogeum.domain.roster.SoldierClass
 import kotlinx.serialization.Serializable
 
-/** Planlama fazında toplanan, commit'te sırayla uygulanan stratejik komutlar. */
+/**
+ * Planlama fazında toplanan stratejik komutlar. Aktör, komutu gönderen batch'ten gelir.
+ * ClaimNode paylaşılan bir aksiyondur: iki oyuncu aynı düğümü isterse kazanan seed'li sırayla belirlenir.
+ */
 @Serializable
 sealed interface StrategicCommand {
     @Serializable data class Build(val slotIndex: Int, val type: FacilityType) : StrategicCommand
     @Serializable data class Recruit(val cls: SoldierClass) : StrategicCommand
     @Serializable data class Dispatch(val regionId: String, val soldierIds: List<String>) : StrategicCommand
+    @Serializable data class ClaimNode(val nodeId: String) : StrategicCommand
 }

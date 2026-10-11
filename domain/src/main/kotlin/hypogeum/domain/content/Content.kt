@@ -3,6 +3,7 @@ package hypogeum.domain.content
 import hypogeum.domain.campus.FacilityType
 import hypogeum.domain.campus.Resources
 import hypogeum.domain.roster.SoldierClass
+import hypogeum.domain.world.ResourceKind
 
 /**
  * Denge verisi. Kotlin kodu olarak tutulur (derleyici kontrolü, engineVersion ile sürümleme).
@@ -18,18 +19,30 @@ object Content {
     val RECRUIT_COST = Resources(cells = 1, biomass = 1)
     const val RECRUIT_EPOCHS = 2
 
-    /** Bölge tehdidi: tatbikattaki uzaylı sayısını ve ödülü belirler. */
-    data class RegionSpec(val id: String, val name: String, val threat: Int) {
-        val alienCount: Int get() = threat + 1
-        val rewardAlloy: Int get() = threat * 2
+    val CLAIM_COST = Resources(alloy = 2)
+    const val MAX_THREAT = 3
+    const val MIN_THREAT = 1
+    const val MAX_ALIENS = 3
+
+    data class NodeSpec(val id: String, val kind: ResourceKind, val yieldPerEpoch: Int)
+
+    data class RegionSpec(val id: String, val name: String, val baseThreat: Int, val nodes: List<NodeSpec>) {
+        fun alienCount(threat: Int): Int = minOf(threat + 1, MAX_ALIENS)
+        fun reward(threat: Int): Int = threat * 2
     }
 
     val REGIONS: List<RegionSpec> = listOf(
-        RegionSpec("dock", "Liman Deposu", threat = 1),
-        RegionSpec("gate", "Eski Geçit", threat = 2),
+        RegionSpec("dock", "Liman Deposu", baseThreat = 1, nodes = listOf(NodeSpec("dock-alloy", ResourceKind.ALLOY, 1))),
+        RegionSpec(
+            "gate", "Eski Geçit", baseThreat = 2,
+            nodes = listOf(
+                NodeSpec("gate-cells", ResourceKind.CELLS, 1),
+                NodeSpec("gate-bio", ResourceKind.BIOMASS, 1),
+            ),
+        ),
     )
 
-    fun region(id: String): RegionSpec? = REGIONS.firstOrNull { it.id == id }
+    fun regionSpec(id: String): RegionSpec? = REGIONS.firstOrNull { it.id == id }
 
     data class FacilitySpec(val cost: Resources, val buildEpochs: Int, val output: Resources)
 

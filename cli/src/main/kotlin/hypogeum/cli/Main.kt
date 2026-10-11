@@ -1,9 +1,12 @@
 package hypogeum.cli
 
+import hypogeum.data.sync.HotseatMatch
 import hypogeum.domain.campus.FacilityType
 import hypogeum.domain.campus.ProductionOrder
 import hypogeum.domain.content.Content
+import hypogeum.domain.core.PlayerId
 import hypogeum.domain.core.Pos
+import hypogeum.domain.core.peer
 import hypogeum.domain.game.GameEngine
 import hypogeum.domain.game.GameEvent
 import hypogeum.domain.game.GameState
@@ -17,35 +20,73 @@ import hypogeum.domain.tactics.SkirmishCommand
 import hypogeum.domain.tactics.SkirmishEvent
 import hypogeum.domain.tactics.SkirmishState
 
+/**
+ * Tek cihazda iki oyunculu (hotseat) oynanış. Koltuklar sırayla planlar; ikisi de commit edince epoch çözülür.
+ * Taktik faz: görevin sahibi oynar.
+ */
 fun main(args: Array<String>) {
     val seed = args.firstOrNull()?.toLongOrNull() ?: 1L
-    val draft = mutableListOf<StrategicCommand>()
-    var state = GameEngine.newGame("cli-$seed", seed)
-    println("HYPOGEUM — Kampüs (seed=$seed)")
+    val match = HotseatMatch.start(GameEngine.newGame("hotseat-$seed", seed))
+    val drafts = mapOf(PlayerId.P1 to mutableListOf<StrategicCommand>(), PlayerId.P2 to mutableListOf<StrategicCommand>())
+    val committed = mutableSetOf<PlayerId>()
+    var seat = PlayerId.P1
+    println("HYPOGEUM — İki Koltuk (seed=$seed)")
     println(HELP)
-    println(renderCampus(state))
+    println(renderWorld(match.state(seat)))
+
     while (true) {
-        when (state.phase) {
-            Phase.PLANNING -> print("[epoch ${state.epoch} | taslak ${draft.size}] > ")
-            Phase.TACTICAL -> print("[görev ${state.mission?.regionId} tur ${state.mission?.skirmish?.round}] > ")
+        val state = match.state(seat)
+        if (state.phase == Phase.TACTICAL) {
+            seat = state.missions.first().owner
+            print("[görev ${state.missions.first().regionId} · $seat · tur ${state.missions.first().skirmish.round}] > ")
+        } else {
+            print("[$seat · epoch ${state.epoch} · taslak ${drafts.getValue(seat).size}] > ")
         }
         val line = readlnOrNull() ?: break
         val trimmed = line.trim()
         if (trimmed == "quit" || trimmed == "q") break
         if (trimmed.isEmpty()) continue
-        state = when (state.phase) {
-            Phase.PLANNING -> planningLine(state, trimmed, draft)
-            Phase.TACTICAL -> tacticalLine(state, trimmed)
+
+        if (state.phase == Phase.TACTICAL) {
+            tacticalLine(match, seat, trimmed)
+            continue
+        }
+        if (trimmed.lowercase().split(Regex("\\s+"))[0] !in setOf("commit", "c")) {
+            planningLine(match, seat, trimmed, drafts.getValue(seat))
+            continue
+        }
+        if (seat in committed) {
+            println("Bu koltuk zaten commit etti.")
+            continue
+        }
+        val events = match.commitPlanning(seat, drafts.getValue(seat).toList())
+        drafts.getValue(seat).clear()
+        committed += seat
+        if (committed.size == 2) {
+            // İki koltuk da commit etti: epoch çözüldü.
+            committed.clear()
+            events.forEach { println("  " + describe(it)) }
+            val after = match.state(PlayerId.P1)
+            if (after.phase == Phase.TACTICAL) {
+                println(renderSkirmish(after.missions.first().skirmish))
+            } else {
+                println(renderWorld(after))
+            }
+            seat = PlayerId.P1
+        } else {
+            println("${seat} commit etti. Ekranı ${seat.peer()}'ye devret.")
+            seat = seat.peer()
         }
     }
-    println("Çıkış. Epoch ${state.epoch}.")
+    println("Çıkış. Epoch ${match.state(PlayerId.P1).epoch}.")
 }
 
-private fun planningLine(state: GameState, line: String, draft: MutableList<StrategicCommand>): GameState {
+/** Planlama komutları: taslağa ekler ya da bilgi basar. Commit burada ele alınmaz. */
+private fun planningLine(match: HotseatMatch, seat: PlayerId, line: String, draft: MutableList<StrategicCommand>) {
     val parts = line.split(Regex("\\s+"))
     when (parts[0].lowercase()) {
         "help", "?" -> println(HELP)
-        "status" -> println(renderCampus(state))
+        "status" -> println(renderCampus(match.state(seat), seat) + "\n" + renderWorld(match.state(seat)))
         "draft" -> println(if (draft.isEmpty()) "  (boş)" else draft.joinToString("\n") { "  " + describeCommand(it) })
         "clear" -> { draft.clear(); println("Taslak temizlendi.") }
         "build" -> {
@@ -64,46 +105,50 @@ private fun planningLine(state: GameState, line: String, draft: MutableList<Stra
             if (parts.size < 3) println("Kullanım: dispatch <bölge> <asker-id>...   (bölgeler: ${Content.REGIONS.joinToString { it.id }})")
             else draft += StrategicCommand.Dispatch(parts[1], parts.drop(2))
         }
-        "commit", "c" -> {
-            val batch = draft.toList()
-            draft.clear()
-            return when (val r = GameEngine.commit(state, batch)) {
-                is GameStep.Rejected -> { println("Olmadı: ${r.reason}"); state }
-                is GameStep.Ok -> {
-                    r.events.forEach { println("  " + describeStrategic(it)) }
-                    if (r.state.phase == Phase.TACTICAL) println(renderSkirmish(r.state.mission!!.skirmish))
-                    else println(renderCampus(r.state))
-                    r.state
-                }
-            }
+        "claim" -> {
+            if (parts.size != 2) println("Kullanım: claim <düğüm-id>   (düğümler: ${Content.REGIONS.flatMap { r -> r.nodes.map { it.id } }.joinToString()})")
+            else draft += StrategicCommand.ClaimNode(parts[1])
         }
         else -> println("Anlaşılmadı. 'help' yazabilirsin.")
     }
-    return state
 }
 
-private fun tacticalLine(state: GameState, line: String): GameState {
+private fun tacticalLine(match: HotseatMatch, owner: PlayerId, line: String) {
     val cmd = parseTactical(line)
     if (cmd == null) {
-        if (line == "help" || line == "?") println(HELP_TACTICAL) else println("Anlaşılmadı. 'help' yazabilirsin.")
-        if (line == "status") println(renderSkirmish(state.mission!!.skirmish))
-        return state
+        when (line.lowercase()) {
+            "help", "?" -> println(HELP_TACTICAL)
+            "status" -> println(renderSkirmish(match.state(owner).missions.first().skirmish))
+            else -> println("Anlaşılmadı. 'help' yazabilirsin.")
+        }
+        return
     }
-    return when (val r = GameEngine.tacticalCommand(state, cmd)) {
-        is GameStep.Rejected -> { println("Olmadı: ${r.reason}"); state }
+    when (val r = match.tacticalCommand(owner, cmd)) {
+        is GameStep.Rejected -> println("Olmadı: ${r.reason}")
         is GameStep.Ok -> {
-            for (e in r.events) println("  " + describeStrategic(e))
-            if (r.state.phase == Phase.PLANNING) {
-                println(renderCampus(r.state))
-            } else if (cmd is SkirmishCommand.EndTurn && r.state.mission?.skirmish?.winner == null) {
-                println(renderSkirmish(r.state.mission!!.skirmish))
+            r.events.forEach { println("  " + describe(it)) }
+            val after = match.state(owner)
+            if (after.phase == Phase.PLANNING) println(renderWorld(after))
+            else if (cmd is SkirmishCommand.EndTurn && after.missions.first().skirmish.winner == null) {
+                println(renderSkirmish(after.missions.first().skirmish))
             }
-            r.state
         }
     }
 }
 
-// --- metinden komut ---
+private val HELP = """Komutlar (planlama):
+  build <slot> <reactor|foundry|hydro|barracks>   inşaat sırasına ekle (slot 0-23)
+  recruit <rifleman|heavy|medic>                  asker eğitimi (barracks gerekir)
+  dispatch <bölge> <asker-id>...                  bölgeye sevk
+  claim <düğüm>                                   kaynak düğümünü talep et (paylaşılan)
+  draft | clear | status                          taslak / temizle / durum
+  commit                                          taslağı kilitle; ikinci koltuk commit edince epoch çözülür
+  quit                                            çık"""
+
+private const val HELP_TACTICAL = """Taktik komutlar (görev sahibi):
+  move <id> <x> <y>   shoot <id> <hedef>   end   status   quit"""
+
+// --- metin ayrıştırma ---
 
 private fun facilityOf(s: String): FacilityType? = when (s.lowercase()) {
     "reactor" -> FacilityType.REACTOR
@@ -137,21 +182,24 @@ fun parseTactical(line: String): SkirmishCommand? {
 
 // --- görüntüleme ---
 
-private const val HELP = """Kampüs komutları:
-  build <slot> <reactor|foundry|hydro|barracks>   inşaat sırasına ekle (slot 0-23)
-  recruit <rifleman|heavy|medic>                  asker eğitimi (barracks gerekir)
-  dispatch <bölge> <asker-id>...                  bölgeye sevk (örn: dispatch dock soldier-1)
-  draft                                           taslağı göster
-  clear                                           taslağı temizle
-  commit                                          taslağı uygula, epoch'u bitir
-  quit                                            çık"""
+fun renderWorld(s: GameState): String {
+    val sb = StringBuilder("Dünya:\n")
+    for (r in s.world.regions) {
+        sb.append("  ${r.id} (${r.name}) tehdit=${r.threat}\n")
+        for (n in r.nodes) {
+            val owner = n.claimedBy?.toString() ?: "sahipsiz"
+            sb.append("    düğüm ${n.id} [${n.kind} +${n.yieldPerEpoch}/epoch] — $owner\n")
+        }
+    }
+    for (inc in s.world.incursions) {
+        sb.append("  UYARI: ${inc.regionId} bölgesine epoch ${inc.arrivalEpoch}'de saldırı\n")
+    }
+    return sb.toString()
+}
 
-private const val HELP_TACTICAL = """Taktik komutlar:
-  move <id> <x> <y>   shoot <id> <hedef>   end   status   quit"""
-
-fun renderCampus(s: GameState): String {
-    val c = s.campus
-    val sb = StringBuilder()
+fun renderCampus(s: GameState, seat: PlayerId): String {
+    val c = s.campuses[seat]
+    val sb = StringBuilder("Kampüs $seat\n")
     sb.append("Stok: alloy=${c.stock.alloy} cells=${c.stock.cells} biomass=${c.stock.biomass}\n")
     sb.append("Izgara (${Content.GRID_COLS}x${Content.GRID_ROWS}, R/F/H/B = tesis, * = inşaat, . = boş):\n")
     for (row in 0 until Content.GRID_ROWS) {
@@ -176,10 +224,11 @@ fun renderCampus(s: GameState): String {
     sb.append("Askerler:\n")
     c.roster.forEach { sol ->
         val status = if (sol.injuryEpochs > 0) " [yaralı ${sol.injuryEpochs}]" else ""
-        sb.append("  %-10s %-8s %-6s hp=%d/%d xp=%d%s\n".format(sol.id, sol.name, sol.cls, sol.hp, sol.stats.maxHp, sol.xp, status))
+        sb.append("  %-10s %-8s %-8s hp=%d/%d xp=%d%s\n".format(sol.id, sol.name, sol.cls, sol.hp, sol.stats.maxHp, sol.xp, status))
     }
     if (c.roster.isEmpty()) sb.append("  (yok)\n")
-    sb.append("Bölgeler: " + Content.REGIONS.joinToString { "${it.id} (${it.name}, tehdit ${it.threat})" } + "\n")
+    val peer = s.campuses[seat.peer()]
+    sb.append("Rakip kampüs: ${peer.grid.count { it != null }} tesis, ${peer.roster.size} asker (stok gizli)\n")
     return sb.toString()
 }
 
@@ -213,6 +262,7 @@ fun describeCommand(c: StrategicCommand): String = when (c) {
     is StrategicCommand.Build -> "inşa et: slot ${c.slotIndex} (${c.type})"
     is StrategicCommand.Recruit -> "eğit: ${c.cls}"
     is StrategicCommand.Dispatch -> "sevk: ${c.regionId} <- ${c.soldierIds.joinToString()}"
+    is StrategicCommand.ClaimNode -> "talep: ${c.nodeId}"
 }
 
 fun describeOrder(o: ProductionOrder): String = when (o) {
@@ -220,22 +270,25 @@ fun describeOrder(o: ProductionOrder): String = when (o) {
     is ProductionOrder.Train -> "eğitim ${o.cls}, ${o.remainingEpochs} epoch"
 }
 
-fun describeStrategic(e: GameEvent): String = when (e) {
-    is GameEvent.CommandRejected -> "REDDEDİLDİ: ${e.reason}"
-    is GameEvent.FacilityQueued -> "inşaat sıraya girdi: slot ${e.slot} (${e.type})"
-    is GameEvent.FacilityBuilt -> "tesis tamamlandı: slot ${e.slot} (${e.type})"
-    is GameEvent.RecruitQueued -> "eğitim başladı: ${e.cls}"
-    is GameEvent.SoldierRecruited -> "yeni asker: ${e.soldierId} ${e.name}"
-    is GameEvent.ResourcesProduced -> "kaynak: +alloy ${e.amount.alloy} +cells ${e.amount.cells} +biomass ${e.amount.biomass}"
-    is GameEvent.SquadDispatched -> "${e.size} asker ${e.regionId} bölgesine sevk edildi"
-    is GameEvent.Tactical -> describe(e.event)
-    is GameEvent.SoldierKilled -> "${e.soldierId} öldü"
-    is GameEvent.SoldierInjured -> "${e.soldierId} yaralandı"
-    is GameEvent.MissionEnded -> if (e.won) "GÖREV BAŞARILI" else "GÖREV BAŞARISIZ"
+fun describe(e: GameEvent): String = when (e) {
+    is GameEvent.CommandRejected -> "[${e.actor}] REDDEDİLDİ: ${e.reason}"
+    is GameEvent.NodeClaimed -> "[${e.owner}] düğüm talep edildi: ${e.nodeId}"
+    is GameEvent.FacilityQueued -> "[${e.owner}] inşaat sıraya girdi: slot ${e.slot} (${e.type})"
+    is GameEvent.FacilityBuilt -> "[${e.owner}] tesis tamamlandı: slot ${e.slot} (${e.type})"
+    is GameEvent.RecruitQueued -> "[${e.owner}] eğitim başladı: ${e.cls}"
+    is GameEvent.SoldierRecruited -> "[${e.owner}] yeni asker: ${e.soldierId} ${e.name}"
+    is GameEvent.ResourcesProduced -> "[${e.owner}] kaynak: +alloy ${e.amount.alloy} +cells ${e.amount.cells} +biomass ${e.amount.biomass}"
+    is GameEvent.SquadDispatched -> "[${e.owner}] ${e.size} asker ${e.regionId} bölgesine sevk edildi"
+    is GameEvent.Tactical -> describeSkirmish(e.event)
+    is GameEvent.SoldierKilled -> "[${e.owner}] ${e.soldierId} öldü"
+    is GameEvent.SoldierInjured -> "[${e.owner}] ${e.soldierId} yaralandı"
+    is GameEvent.MissionEnded -> "[${e.owner}] ${if (e.won) "GÖREV BAŞARILI" else "GÖREV BAŞARISIZ"}"
+    is GameEvent.IncursionWarning -> "UYARI: ${e.regionId} bölgesine epoch ${e.arrivalEpoch}'de saldırı"
+    is GameEvent.IncursionArrived -> "SALDIRI: ${e.regionId} bölgesi işgal edildi, düğüm talepleri düştü"
     is GameEvent.EpochStarted -> "--- Epoch ${e.epoch} ---"
 }
 
-fun describe(e: SkirmishEvent): String = when (e) {
+fun describeSkirmish(e: SkirmishEvent): String = when (e) {
     is SkirmishEvent.Moved -> "${e.unitId} -> (${e.to.x},${e.to.y})"
     is SkirmishEvent.Shot ->
         if (e.hit) "${e.attackerId} ${e.targetId}'i vurdu (-${e.damage})" else "${e.attackerId} ıskaladı (${e.targetId})"

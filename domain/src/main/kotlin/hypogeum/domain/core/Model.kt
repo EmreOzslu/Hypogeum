@@ -16,8 +16,15 @@ data class PerPlayer<T>(val p1: T, val p2: T) {
         PlayerId.P2 -> p2
     }
 
+    fun with(id: PlayerId, value: T): PerPlayer<T> = when (id) {
+        PlayerId.P1 -> copy(p1 = value)
+        PlayerId.P2 -> copy(p2 = value)
+    }
+
     inline fun <R> map(transform: (T) -> R): PerPlayer<R> = PerPlayer(transform(p1), transform(p2))
 }
+
+fun PlayerId.peer(): PlayerId = if (this == PlayerId.P1) PlayerId.P2 else PlayerId.P1
 
 /** Deterministik ID üretimi: UUID yok, sayaç var. */
 @Serializable
