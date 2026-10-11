@@ -62,7 +62,7 @@ Hypogeum/
 
 ```kotlin
 // core
-@JvmInline @Serializable value class Pos(val x: Int, val y: Int)     // yalnızca Int; ızgara tabanlı
+@Serializable data class Pos(val x: Int, val y: Int)              // yalnızca Int; ızgara tabanlı (value class değil: Kotlin tek alan kısıtı)
 @Serializable enum class PlayerId { P1, P2 }
 @Serializable data class PerPlayer<T>(val p1: T, val p2: T)           // Map yerine: sabit sıra, sabit alan
 @Serializable data class RngState(val s: Long)                        // SplitMix64 durumu
